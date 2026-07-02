@@ -1,0 +1,20 @@
+rl:
+  prompts_path: data/processed/rl_prompts.txt
+  checkpoint: runs/sft_tiny/checkpoint_last.pt
+  reference_checkpoint: runs/sft_tiny/checkpoint_last.pt
+  out_dir: runs/rl_tiny
+  updates: 30
+  batch_size: 2
+  lr: 1.0e-5
+  max_new_tokens: 80
+  sample_steps: 12
+  temperature: 1.0
+  top_k: 50
+  top_p: 0.95
+  kl_coef: 0.02
+  entropy_coef: 0.0001
+  reward:
+    kind: heuristic_helpfulness
+    min_chars: 80
+  save_every: 10
+  log_every: 1

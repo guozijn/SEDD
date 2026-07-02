@@ -1,0 +1,27 @@
+model:
+  seq_len: 128
+  d_model: 128
+  n_layers: 3
+  n_heads: 4
+  d_ff: 512
+  dropout: 0.1
+train:
+  stage: sft
+  train_path: data/processed/sft_train.pt
+  valid_path: data/processed/sft_valid.pt
+  out_dir: runs/sft_tiny
+  resume: runs/pretrain_tiny/checkpoint_last.pt
+  batch_size: 8
+  steps: 150
+  lr: 1.5e-4
+  warmup_steps: 20
+  eval_every: 50
+  save_every: 75
+  log_every: 10
+  amp: true
+sampling:
+  steps: 24
+  max_new_tokens: 80
+  temperature: 0.85
+  top_k: 50
+  top_p: 0.95

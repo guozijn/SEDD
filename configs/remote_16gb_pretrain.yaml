@@ -1,0 +1,26 @@
+model:
+  seq_len: 192
+  d_model: 384
+  n_layers: 6
+  n_heads: 6
+  d_ff: 1536
+  dropout: 0.1
+train:
+  stage: pretrain
+  train_path: data/processed/pretrain_train.pt
+  valid_path: data/processed/pretrain_valid.pt
+  out_dir: runs/pretrain_16gb
+  batch_size: 24
+  steps: 5000
+  lr: 3.0e-4
+  warmup_steps: 500
+  eval_every: 250
+  save_every: 1000
+  log_every: 20
+  amp: true
+sampling:
+  steps: 48
+  max_new_tokens: 128
+  temperature: 0.9
+  top_k: 80
+  top_p: 0.95

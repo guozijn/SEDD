@@ -1,0 +1,52 @@
+[project]
+name = "sedd-mini"
+version = "0.1.0"
+description = "A compact Score Entropy Discrete Diffusion language modeling pipeline for SEDD interview work."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.116",
+  "numpy>=1.26",
+  "pydantic>=2.8",
+  "pyyaml>=6.0",
+  "torch>=2.2",
+  "tqdm>=4.66",
+  "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+datasets = ["datasets>=2.20"]
+dev = ["pytest>=8.2", "ruff>=0.5"]
+notebook = ["ipykernel>=6.29", "jupyterlab>=4.2"]
+official = [
+  "einops>=0.7",
+  "huggingface-hub>=0.21",
+  "omegaconf>=2.3",
+  "safetensors>=0.4",
+  "transformers>=4.38",
+]
+
+[project.scripts]
+sedd-api = "sedd_mini.server:main"
+sedd-eval = "sedd_mini.evaluate:main"
+sedd-official-check = "sedd_mini.official_backend:check_main"
+sedd-official-eval = "sedd_mini.official_evaluate:main"
+sedd-official-export-base = "sedd_mini.official_export:main"
+sedd-official-prepare = "sedd_mini.official_prepare_data:main"
+sedd-official-rl = "sedd_mini.official_posttrain_rl:main"
+sedd-official-sft = "sedd_mini.official_finetune:main"
+sedd-prepare = "sedd_mini.prepare_data:main"
+sedd-rl = "sedd_mini.posttrain_rl:main"
+sedd-sample = "sedd_mini.sample:main"
+sedd-train = "sedd_mini.train:main"
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

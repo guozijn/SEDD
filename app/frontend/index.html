@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SEDD Demo</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260702-arc-selector" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <h1>SEDD Demo</h1>
+          </div>
+        </header>
+
+        <section class="panel active" id="visualize-panel">
+          <label for="model-select">Model</label>
+          <select id="model-select"></select>
+          <p class="model-meta" id="model-meta"></p>
+          <label for="viz-prompt">Prompt</label>
+          <textarea id="viz-prompt" rows="4">Answer the science multiple-choice question. Return only the final choice as `Answer: &lt;letter&gt;`.
+
+Question: Which factor will most likely cause a person to develop a fever?
+Choices:
+A. a leg muscle relaxing after exercise
+B. a bacterial population in the bloodstream
+C. several viral particles on the skin
+D. carbohydrates being digested in the stomach</textarea>
+          <div class="prompt-examples" id="prompt-examples"></div>
+          <div class="controls">
+            <label>Steps <input id="viz-steps" type="number" min="1" max="64" value="8" /></label>
+            <label>Tokens <input id="viz-tokens" type="number" min="4" max="96" value="32" /></label>
+            <label>Batch <input id="viz-batch" type="number" min="1" max="8" value="4" /></label>
+          </div>
+          <button id="visualize">Run diffusion trace</button>
+        </section>
+      </section>
+
+      <aside class="output">
+        <div class="output-head">
+          <h2>Denoising</h2>
+          <div class="output-actions">
+            <button id="replay" disabled>Replay</button>
+            <button id="clear">Clear</button>
+          </div>
+        </div>
+        <pre id="result"></pre>
+        <div id="trace"></div>
+      </aside>
+    </main>
+    <script src="/static/main.js?v=20260702-arc-selector"></script>
+  </body>
+</html>

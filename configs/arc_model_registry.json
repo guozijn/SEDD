@@ -1,0 +1,26 @@
+{
+  "default_model_id": "arc_sft",
+  "models": [
+    {
+      "id": "base",
+      "label": "SEDD-small base",
+      "backend": "official",
+      "model_path": "runs/arc_models/base/checkpoint_base.pt",
+      "description": "Official louaaron/sedd-small exported before ARC tuning"
+    },
+    {
+      "id": "arc_sft",
+      "label": "ARC SFT",
+      "backend": "official",
+      "model_path": "runs/arc_models/arc_sft/checkpoint_last.pt",
+      "description": "Official SEDD-small fine-tuned on ARC-Easy multiple-choice science QA"
+    },
+    {
+      "id": "arc_rl",
+      "label": "ARC SFT + RL",
+      "backend": "official",
+      "model_path": "runs/arc_models/arc_rl/checkpoint_last.pt",
+      "description": "ARC SFT checkpoint post-trained with exact-answer reward on ARC-Challenge prompts"
+    }
+  ]
+}
