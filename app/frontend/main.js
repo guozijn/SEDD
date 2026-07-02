@@ -13,46 +13,50 @@ const EXAMPLE_PROMPTS = [
   {
     label: "Fever",
     prompt:
-      "Answer the science multiple-choice question. Return only the final choice as `Answer: <letter>`.\n\n" +
+      "User: Answer the science multiple-choice question. Return only the final choice as `Answer: <letter>`.\n\n" +
       "Question: Which factor will most likely cause a person to develop a fever?\n" +
       "Choices:\n" +
       "A. a leg muscle relaxing after exercise\n" +
       "B. a bacterial population in the bloodstream\n" +
       "C. several viral particles on the skin\n" +
-      "D. carbohydrates being digested in the stomach",
+      "D. carbohydrates being digested in the stomach\n" +
+      "Assistant: ",
   },
   {
     label: "Circuit",
     prompt:
-      "Answer the science multiple-choice question. Return only the final choice as `Answer: <letter>`.\n\n" +
+      "User: Answer the science multiple-choice question. Return only the final choice as `Answer: <letter>`.\n\n" +
       "Question: A student builds a circuit with a battery, wires, and a bulb. The bulb does not light. Which change would most likely allow the bulb to light?\n" +
       "Choices:\n" +
       "A. opening the switch farther\n" +
       "B. completing the path for electric current\n" +
       "C. replacing the wires with string\n" +
-      "D. removing the battery from the circuit",
+      "D. removing the battery from the circuit\n" +
+      "Assistant: ",
   },
   {
     label: "Moon",
     prompt:
-      "Answer the science multiple-choice question. Return only the final choice as `Answer: <letter>`.\n\n" +
+      "User: Answer the science multiple-choice question. Return only the final choice as `Answer: <letter>`.\n\n" +
       "Question: Why does the Moon appear to have different shapes during a month?\n" +
       "Choices:\n" +
       "A. Earth blocks different amounts of sunlight from reaching the Moon each night\n" +
       "B. The Moon changes its actual shape as it moves around Earth\n" +
       "C. Different portions of the Moon's sunlit half are visible from Earth\n" +
-      "D. Clouds cover different parts of the Moon at regular times",
+      "D. Clouds cover different parts of the Moon at regular times\n" +
+      "Assistant: ",
   },
   {
     label: "Erosion",
     prompt:
-      "Answer the science multiple-choice question. Return only the final choice as `Answer: <letter>`.\n\n" +
+      "User: Answer the science multiple-choice question. Return only the final choice as `Answer: <letter>`.\n\n" +
       "Question: Which process most directly breaks rocks into smaller pieces over time?\n" +
       "Choices:\n" +
       "A. weathering\n" +
       "B. condensation\n" +
       "C. evaporation\n" +
-      "D. photosynthesis",
+      "D. photosynthesis\n" +
+      "Assistant: ",
   },
 ];
 
@@ -256,9 +260,9 @@ document.querySelector("#visualize").addEventListener("click", async (event) => 
       batch_size: Number(document.querySelector("#viz-batch").value),
       max_new_tokens: Number(document.querySelector("#viz-tokens").value),
       steps: Number(document.querySelector("#viz-steps").value),
-      temperature: 0.9,
-      top_k: 50,
-      top_p: 0.95,
+      temperature: 0.7,
+      top_k: 20,
+      top_p: 0.9,
     });
     renderTrace(data);
   } catch (error) {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.util
+import json
 import sys
 import types
 from dataclasses import dataclass
@@ -24,6 +25,10 @@ class OfficialModules:
     load_model: Any
     sampling: Any
     tokenizer_cls: Any
+    sedd_cls: Any
+    graph_lib: Any
+    noise_lib: Any
+    omegaconf: Any
 
 
 def _install_flash_attn_fallback() -> None:
@@ -114,6 +119,10 @@ def _import_official_modules(repo_path: str | Path) -> OfficialModules:
         load_model = importlib.import_module("load_model")
         sampling = importlib.import_module("sampling")
         transformers = importlib.import_module("transformers")
+        model_module = importlib.import_module("model")
+        graph_lib = importlib.import_module("graph_lib")
+        noise_lib = importlib.import_module("noise_lib")
+        omegaconf = importlib.import_module("omegaconf")
     except Exception as exc:  # noqa: BLE001
         raise OfficialBackendError(
             "Could not import official SEDD backend. Install optional dependencies with "
@@ -125,6 +134,10 @@ def _import_official_modules(repo_path: str | Path) -> OfficialModules:
         load_model=load_model.load_model,
         sampling=sampling,
         tokenizer_cls=transformers.GPT2TokenizerFast,
+        sedd_cls=model_module.SEDD,
+        graph_lib=graph_lib,
+        noise_lib=noise_lib,
+        omegaconf=omegaconf.OmegaConf,
     )
 
 
@@ -158,7 +171,10 @@ class OfficialSEDDBackend:
         self.repo_path = str(repo_path)
         modules = _import_official_modules(repo_path)
         self._sampling = modules.sampling
-        self.tokenizer = modules.tokenizer_cls.from_pretrained("gpt2")
+        try:
+            self.tokenizer = modules.tokenizer_cls.from_pretrained("gpt2", local_files_only=True)
+        except Exception:  # noqa: BLE001
+            self.tokenizer = modules.tokenizer_cls.from_pretrained("gpt2")
         self.model, self.graph, self.noise, self.base_model_path, self.step = load_official_components(
             model_path,
             repo_path=repo_path,
@@ -353,11 +369,45 @@ def load_official_components(
     if path.is_file():
         payload = torch.load(path, map_location="cpu")
         base_model_path = payload.get("base_model_path", "louaaron/sedd-small")
-        model, graph, noise = modules.load_model(base_model_path, device)
+        config = _load_official_model_config(base_model_path, modules)
+        graph = modules.graph_lib.get_graph(config, device)
+        noise = modules.noise_lib.get_noise(config).to(device)
+        model = modules.sedd_cls(config).to(device)
         model.load_state_dict(payload["model"], strict=True)
         return model, graph, noise, base_model_path, int(payload.get("step", 0))
     model, graph, noise = modules.load_model(model_path, device)
     return model, graph, noise, model_path, 0
+
+
+def _load_official_model_config(model_path: str, modules: OfficialModules):
+    path = Path(str(model_path)).expanduser()
+    candidates = []
+    if path.is_dir():
+        candidates.append(path / "config.json")
+    if path.is_file() and path.name == "config.json":
+        candidates.append(path)
+
+    for candidate in candidates:
+        if candidate.is_file():
+            with candidate.open("r", encoding="utf-8") as f:
+                return modules.omegaconf.create(json.load(f))
+
+    try:
+        huggingface_hub = importlib.import_module("huggingface_hub")
+        config_path = huggingface_hub.hf_hub_download(
+            repo_id=str(model_path),
+            filename="config.json",
+            local_files_only=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise OfficialBackendError(
+            f"Could not find cached official SEDD config for {model_path!r}. "
+            "Run `scripts/setup_official_backend.sh` with network/proxy once, "
+            "or pass a local config directory."
+        ) from exc
+
+    with Path(config_path).open("r", encoding="utf-8") as f:
+        return modules.omegaconf.create(json.load(f))
 
 
 def save_official_checkpoint(

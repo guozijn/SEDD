@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>SEDD Demo</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260702-arc-selector" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260702-arc-prompt" />
   </head>
   <body>
     <main class="shell">
@@ -20,14 +20,15 @@
           <select id="model-select"></select>
           <p class="model-meta" id="model-meta"></p>
           <label for="viz-prompt">Prompt</label>
-          <textarea id="viz-prompt" rows="4">Answer the science multiple-choice question. Return only the final choice as `Answer: &lt;letter&gt;`.
+          <textarea id="viz-prompt" rows="4">User: Answer the science multiple-choice question. Return only the final choice as `Answer: &lt;letter&gt;`.
 
 Question: Which factor will most likely cause a person to develop a fever?
 Choices:
 A. a leg muscle relaxing after exercise
 B. a bacterial population in the bloodstream
 C. several viral particles on the skin
-D. carbohydrates being digested in the stomach</textarea>
+D. carbohydrates being digested in the stomach
+Assistant: </textarea>
           <div class="prompt-examples" id="prompt-examples"></div>
           <div class="controls">
             <label>Steps <input id="viz-steps" type="number" min="1" max="64" value="8" /></label>
@@ -50,6 +51,6 @@ D. carbohydrates being digested in the stomach</textarea>
         <div id="trace"></div>
       </aside>
     </main>
-    <script src="/static/main.js?v=20260702-arc-selector"></script>
+    <script src="/static/main.js?v=20260702-arc-prompt"></script>
   </body>
 </html>
