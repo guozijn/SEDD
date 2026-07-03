@@ -342,6 +342,119 @@ class OfficialSEDDBackend:
             "steps": trace,
         }
 
+    @torch.no_grad()
+    def visualize_infill(self, text: str, params: Any, *, batch_size: int = 4) -> dict[str, object]:
+        from .sampling import top_k_top_p_filter
+
+        marker = "[MASK]"
+        if marker not in text:
+            return self.visualize_generate(text, params, batch_size=batch_size)
+
+        eos = int(self.tokenizer.eos_token_id)
+        mask_id = int(self.graph.dim - 1)
+        tokens_per_mask = max(1, int(params.max_new_tokens))
+        parts = text.split(marker)
+        ids_template: list[int] = []
+        spans: list[dict[str, object]] = []
+        for index, part in enumerate(parts):
+            if part:
+                fixed_ids = self.tokenizer(part).input_ids
+                start = len(ids_template)
+                ids_template.extend(fixed_ids)
+                spans.append({"kind": "fixed", "start": start, "end": len(ids_template)})
+            if index < len(parts) - 1:
+                start = len(ids_template)
+                ids_template.extend([mask_id] * tokens_per_mask)
+                spans.append({"kind": "generated", "start": start, "end": len(ids_template)})
+
+        if len(ids_template) > self.seq_len:
+            raise ValueError(
+                f"infill template is {len(ids_template)} tokens, longer than model sequence length {self.seq_len}"
+            )
+
+        ids = torch.full((batch_size, self.seq_len), eos, dtype=torch.long, device=self.device)
+        ids[:, : len(ids_template)] = torch.tensor(ids_template, dtype=torch.long, device=self.device)
+        response_mask = ids.eq(mask_id)
+
+        def token_label(token_id: int) -> str:
+            if token_id == mask_id:
+                return "[MASK]"
+            if token_id == eos:
+                return "<eos>"
+            text_value = self.tokenizer.decode([token_id], skip_special_tokens=True)
+            return text_value if text_value.strip() else repr(text_value)[1:-1]
+
+        def decode_visible(token_ids: list[int]) -> str:
+            visible = [token for token in token_ids if token not in {mask_id, eos}]
+            return self.tokenizer.decode(visible, skip_special_tokens=True)
+
+        def snapshot(step: int) -> dict[str, object]:
+            samples = []
+            for row in ids[:, : len(ids_template)].detach().cpu().tolist():
+                rendered = []
+                for span in spans:
+                    start = int(span["start"])
+                    end = int(span["end"])
+                    span_ids = row[start:end]
+                    kind = str(span["kind"])
+                    if kind == "fixed":
+                        rendered.append({"kind": "fixed", "text": decode_visible(span_ids)})
+                    else:
+                        rendered.append(
+                            {
+                                "kind": "generated",
+                                "text": decode_visible(span_ids),
+                                "tokens": [token_label(token) for token in span_ids],
+                                "masked": sum(1 for token in span_ids if token == mask_id),
+                            }
+                        )
+                samples.append(
+                    {
+                        "text": "".join(str(segment.get("text", "")) for segment in rendered),
+                        "segments": rendered,
+                        "masked": sum(1 for token in row if token == mask_id),
+                    }
+                )
+            return {"step": step, "samples": samples}
+
+        trace = [snapshot(0)]
+        self.model.eval()
+        for step in range(int(params.steps)):
+            masked_any = False
+            t = torch.full(
+                (batch_size,),
+                1.0 - (step / max(int(params.steps), 1)) * 0.999,
+                device=self.device,
+            )
+            sigma = self.noise(t)[0]
+            logits_all = self.model(ids.clone(), sigma)[..., :mask_id]
+            remaining_steps = max(1, int(params.steps) - step)
+            for batch_idx in range(batch_size):
+                masked = (ids[batch_idx] == mask_id) & response_mask[batch_idx]
+                positions = masked.nonzero(as_tuple=False).flatten()
+                if positions.numel() == 0:
+                    continue
+                masked_any = True
+                count = max(1, int(torch.ceil(torch.tensor(positions.numel() / remaining_steps)).item()))
+                order = torch.randperm(positions.numel(), device=self.device)
+                fill_positions = positions[order[:count]]
+                logits = logits_all[batch_idx, fill_positions] / max(float(params.temperature), 1.0e-5)
+                logits = top_k_top_p_filter(logits, top_k=int(params.top_k), top_p=float(params.top_p))
+                probs = torch.softmax(logits, dim=-1)
+                ids[batch_idx, fill_positions] = torch.multinomial(probs, num_samples=1).squeeze(-1)
+            trace.append(snapshot(step + 1))
+            if not masked_any:
+                break
+
+        return {
+            "backend": self.name,
+            "mode": "infill",
+            "source": text,
+            "batch_size": batch_size,
+            "tokens_per_mask": tokens_per_mask,
+            "steps": trace,
+        }
+
 
 def check_main() -> None:
     parser = argparse.ArgumentParser(description="Check official SEDD backend availability.")

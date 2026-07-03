@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>SEDD Demo</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260702-arc-prompt" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260703-infill-inline" />
   </head>
   <body>
     <main class="shell">
@@ -19,23 +19,19 @@
           <label for="model-select">Model</label>
           <select id="model-select"></select>
           <p class="model-meta" id="model-meta"></p>
-          <label for="viz-prompt">Prompt</label>
-          <textarea id="viz-prompt" rows="4">User: Answer the science multiple-choice question. Return only the final choice as `Answer: &lt;letter&gt;`.
-
-Question: Which factor will most likely cause a person to develop a fever?
-Choices:
-A. a leg muscle relaxing after exercise
-B. a bacterial population in the bloodstream
-C. several viral particles on the skin
-D. carbohydrates being digested in the stomach
-Assistant: </textarea>
+          <div class="mode-switch" aria-label="Generation mode">
+            <button type="button" data-mode="generate">Generate</button>
+            <button type="button" data-mode="infill" class="active">Infill</button>
+          </div>
+          <label id="prompt-label" for="viz-prompt">Text with masks</label>
+          <textarea id="viz-prompt" rows="4">A bow and arrow is a traditional weapon that [MASK] and can be fired by a trained archer.</textarea>
           <div class="prompt-examples" id="prompt-examples"></div>
           <div class="controls">
             <label>Steps <input id="viz-steps" type="number" min="1" max="64" value="8" /></label>
-            <label>Tokens <input id="viz-tokens" type="number" min="4" max="96" value="32" /></label>
+            <label><span id="token-control-label">Mask tokens</span> <input id="viz-tokens" type="number" min="1" max="96" value="4" /></label>
             <label>Batch <input id="viz-batch" type="number" min="1" max="8" value="4" /></label>
           </div>
-          <button id="visualize">Run diffusion trace</button>
+          <button id="visualize">Run infill trace</button>
         </section>
       </section>
 
@@ -51,6 +47,6 @@ Assistant: </textarea>
         <div id="trace"></div>
       </aside>
     </main>
-    <script src="/static/main.js?v=20260702-arc-prompt"></script>
+    <script src="/static/main.js?v=20260703-infill-inline"></script>
   </body>
 </html>

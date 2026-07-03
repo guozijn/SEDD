@@ -51,6 +51,17 @@ class VisualizeRequest(BaseModel):
     top_p: float = 0.95
 
 
+class VisualizeInfillRequest(BaseModel):
+    model_id: str | None = None
+    text: str
+    batch_size: int = 4
+    tokens_per_mask: int = 4
+    steps: int = 8
+    temperature: float = 0.9
+    top_k: int = 50
+    top_p: float = 0.95
+
+
 def load_registry(path: str | Path) -> dict[str, Any]:
     with Path(path).open("r", encoding="utf-8") as f:
         payload = json.load(f)
@@ -197,6 +208,21 @@ def create_app(
         )
         return get_backend(req.model_id).visualize_generate(
             req.prompt,
+            params,
+            batch_size=max(1, min(req.batch_size, 8)),
+        )
+
+    @app.post("/visualize-infill")
+    def visualize_infill(req: VisualizeInfillRequest):
+        params = GenerationParams(
+            max_new_tokens=req.tokens_per_mask,
+            steps=req.steps,
+            temperature=req.temperature,
+            top_k=req.top_k,
+            top_p=req.top_p,
+        )
+        return get_backend(req.model_id).visualize_infill(
+            req.text,
             params,
             batch_size=max(1, min(req.batch_size, 8)),
         )

@@ -4,12 +4,17 @@ const replayButton = document.querySelector("#replay");
 const modelSelect = document.querySelector("#model-select");
 const modelMeta = document.querySelector("#model-meta");
 const promptInput = document.querySelector("#viz-prompt");
+const promptLabel = document.querySelector("#prompt-label");
 const promptExamples = document.querySelector("#prompt-examples");
+const tokenControlLabel = document.querySelector("#token-control-label");
+const visualizeButton = document.querySelector("#visualize");
+const modeButtons = Array.from(document.querySelectorAll("[data-mode]"));
 let activeTrace = null;
 let playbackTimer = null;
 let availableModels = [];
+let activeMode = "infill";
 
-const EXAMPLE_PROMPTS = [
+const GENERATION_EXAMPLES = [
   {
     label: "Fever",
     prompt:
@@ -46,22 +51,34 @@ const EXAMPLE_PROMPTS = [
       "D. Clouds cover different parts of the Moon at regular times\n" +
       "Assistant: ",
   },
+];
+
+const INFILL_EXAMPLES = [
   {
-    label: "Erosion",
+    label: "Front + End",
     prompt:
-      "User: Answer the science multiple-choice question. Return only the final choice as `Answer: <letter>`.\n\n" +
-      "Question: Which process most directly breaks rocks into smaller pieces over time?\n" +
-      "Choices:\n" +
-      "A. weathering\n" +
-      "B. condensation\n" +
-      "C. evaporation\n" +
-      "D. photosynthesis\n" +
-      "Assistant: ",
+      "A bow and arrow is a traditional weapon that [MASK] and can be fired by a trained archer.",
+  },
+  {
+    label: "Split",
+    prompt:
+      "SEDD can keep the beginning of a sentence fixed, fill [MASK] in the middle, and still use [MASK] from the end.",
+  },
+  {
+    label: "Middle",
+    prompt:
+      "The scientist measured the water every morning because [MASK] can change quickly after heavy rain.",
+  },
+  {
+    label: "Science",
+    prompt:
+      "The patient developed a [MASK] after bacteria entered the bloodstream, so the doctor checked for [MASK].",
   },
 ];
 
 modelSelect.disabled = true;
 modelSelect.innerHTML = '<option value="">Loading models...</option>';
+visualizeButton.dataset.label = "Run infill trace";
 
 async function postJson(url, payload) {
   const response = await fetch(url, {
@@ -80,14 +97,13 @@ function setBusy(button, busy) {
   button.textContent = busy ? "Running..." : button.dataset.label;
 }
 
-document.querySelector("#visualize").dataset.label = "Run diffusion trace";
+function examplesForMode() {
+  return activeMode === "infill" ? INFILL_EXAMPLES : GENERATION_EXAMPLES;
+}
 
 function renderPromptExamples() {
-  if (!promptExamples) {
-    return;
-  }
   promptExamples.innerHTML = "";
-  EXAMPLE_PROMPTS.forEach((example) => {
+  examplesForMode().forEach((example) => {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = example.label;
@@ -97,6 +113,24 @@ function renderPromptExamples() {
     });
     promptExamples.appendChild(button);
   });
+}
+
+function setMode(mode, { resetPrompt = true } = {}) {
+  activeMode = mode;
+  modeButtons.forEach((button) => {
+    const isActive = button.dataset.mode === mode;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  });
+  promptLabel.textContent = mode === "infill" ? "Text with masks" : "Prompt";
+  tokenControlLabel.textContent = mode === "infill" ? "Mask tokens" : "Tokens";
+  visualizeButton.dataset.label = mode === "infill" ? "Run infill trace" : "Run diffusion trace";
+  visualizeButton.textContent = visualizeButton.dataset.label;
+  renderPromptExamples();
+  if (resetPrompt) {
+    promptInput.value = examplesForMode()[0].prompt;
+  }
+  selectPreferredModel();
 }
 
 function clearPlayback() {
@@ -121,13 +155,85 @@ function tokenClass(value, previousValue) {
   return "stable";
 }
 
+function visibleTokenText(value, sampleIndex, tokenIndex, frameIndex) {
+  if (value === "[MASK]") {
+    return noiseGlyph(sampleIndex, tokenIndex, frameIndex);
+  }
+  if (value === "<eos>") {
+    return "";
+  }
+  return value || "";
+}
+
+function appendToken(parent, value, previousValue, sampleIndex, tokenIndex, frameIndex) {
+  const text = visibleTokenText(value, sampleIndex, tokenIndex, frameIndex);
+  if (!text && value !== "[MASK]") {
+    return;
+  }
+  const token = document.createElement("span");
+  token.className = `inline-token ${tokenClass(value, previousValue)}`;
+  token.textContent = text || " ";
+  parent.appendChild(token);
+}
+
+function generatedSegments(sample) {
+  return Array.isArray(sample.segments)
+    ? sample.segments.filter((segment) => segment.kind === "generated")
+    : [];
+}
+
+function renderSampleText(sample, previousSample, sampleIndex, frameIndex) {
+  const text = document.createElement("div");
+  text.className = "inline-text";
+
+  if (Array.isArray(sample.segments)) {
+    let generatedIndex = 0;
+    const previousGenerated = generatedSegments(previousSample || {});
+    sample.segments.forEach((segment) => {
+      if (segment.kind === "fixed") {
+        const fixed = document.createElement("span");
+        fixed.className = "fixed-text";
+        fixed.textContent = segment.text || "";
+        text.appendChild(fixed);
+        return;
+      }
+
+      const span = document.createElement("span");
+      span.className = "generated-span";
+      const previousTokens = previousGenerated[generatedIndex]?.tokens || [];
+      const tokens = Array.isArray(segment.tokens) ? segment.tokens : [];
+      tokens.forEach((value, tokenIndex) => {
+        appendToken(
+          span,
+          value,
+          previousTokens[tokenIndex] || "[MASK]",
+          sampleIndex,
+          generatedIndex * 100 + tokenIndex,
+          frameIndex,
+        );
+      });
+      text.appendChild(span);
+      generatedIndex += 1;
+    });
+    return text;
+  }
+
+  const previousTokens = Array.isArray(previousSample?.tokens) ? previousSample.tokens : [];
+  const tokens = Array.isArray(sample.tokens) ? sample.tokens : [];
+  tokens.forEach((value, tokenIndex) => {
+    appendToken(text, value, previousTokens[tokenIndex] || "[MASK]", sampleIndex, tokenIndex, frameIndex);
+  });
+  return text;
+}
+
 function renderFrame(data, frameIndex) {
   const step = data.steps[frameIndex];
   const previous = data.steps[Math.max(0, frameIndex - 1)];
   const totalFrames = Math.max(1, data.steps.length - 1);
   const progress = Math.round((frameIndex / totalFrames) * 100);
   const label = modelSelect.options[modelSelect.selectedIndex]?.textContent || data.backend;
-  result.textContent = `${label} | batch ${data.batch_size} | step ${step.step}/${totalFrames}`;
+  const mode = data.mode === "infill" ? "infill" : "generation";
+  result.textContent = `${label} | ${mode} | batch ${data.batch_size} | step ${step.step}/${totalFrames}`;
   trace.innerHTML = "";
 
   const stage = document.createElement("section");
@@ -137,7 +243,7 @@ function renderFrame(data, frameIndex) {
   head.className = "stage-head";
   const title = document.createElement("div");
   title.className = "stage-title";
-  title.textContent = frameIndex === totalFrames ? "Denoised samples" : "Reverse diffusion in progress";
+  title.textContent = frameIndex === totalFrames ? "Denoised text" : "Reverse diffusion in progress";
   const meter = document.createElement("div");
   meter.className = "progress-track";
   const fill = document.createElement("div");
@@ -155,23 +261,9 @@ function renderFrame(data, frameIndex) {
     lane.className = "sample-lane";
     const laneHead = document.createElement("div");
     laneHead.className = "lane-head";
-    laneHead.textContent = `sample ${sampleIndex + 1} | latent slots ${sample.masked}`;
-    const row = document.createElement("div");
-    row.className = "denoise-row";
-    sample.tokens.forEach((value, tokenIndex) => {
-      const previousValue = previous.samples[sampleIndex]?.tokens[tokenIndex] || "[MASK]";
-      const token = document.createElement("span");
-      const state = tokenClass(value, previousValue);
-      token.className = `denoise-token ${state}`;
-      token.textContent = value === "[MASK]" ? noiseGlyph(sampleIndex, tokenIndex, frameIndex) : value || " ";
-      row.appendChild(token);
-    });
-    const text = document.createElement("div");
-    text.className = "lane-text";
-    text.textContent = sample.text || " ";
+    laneHead.textContent = `sample ${sampleIndex + 1} | unresolved ${sample.masked}`;
     lane.appendChild(laneHead);
-    lane.appendChild(row);
-    lane.appendChild(text);
+    lane.appendChild(renderSampleText(sample, previous.samples[sampleIndex], sampleIndex, frameIndex));
     lanes.appendChild(lane);
   });
   stage.appendChild(lanes);
@@ -194,12 +286,19 @@ function playTrace(data) {
   }, 720);
 }
 
-function renderTrace(data) {
-  playTrace(data);
-}
-
 function selectedModel() {
   return availableModels.find((model) => model.id === modelSelect.value);
+}
+
+function selectPreferredModel() {
+  if (availableModels.length === 0) {
+    return;
+  }
+  const preferredId = activeMode === "infill" ? "base" : "arc_sft";
+  if (availableModels.some((model) => model.id === preferredId)) {
+    modelSelect.value = preferredId;
+    updateModelMeta();
+  }
 }
 
 function updateModelMeta() {
@@ -247,24 +346,35 @@ function renderModelOptions(payload) {
     modelSelect.appendChild(option);
   });
   modelSelect.disabled = availableModels.length <= 1;
+  selectPreferredModel();
   updateModelMeta();
 }
 
-document.querySelector("#visualize").addEventListener("click", async (event) => {
+visualizeButton.addEventListener("click", async (event) => {
   const button = event.currentTarget;
   setBusy(button, true);
   try {
-    const data = await postJson("/visualize", {
+    const common = {
       model_id: modelSelect.value || null,
-      prompt: promptInput.value,
       batch_size: Number(document.querySelector("#viz-batch").value),
-      max_new_tokens: Number(document.querySelector("#viz-tokens").value),
       steps: Number(document.querySelector("#viz-steps").value),
-      temperature: 0.7,
-      top_k: 20,
-      top_p: 0.9,
-    });
-    renderTrace(data);
+      temperature: activeMode === "infill" ? 0.8 : 0.7,
+      top_k: activeMode === "infill" ? 40 : 20,
+      top_p: activeMode === "infill" ? 0.95 : 0.9,
+    };
+    const data =
+      activeMode === "infill"
+        ? await postJson("/visualize-infill", {
+            ...common,
+            text: promptInput.value,
+            tokens_per_mask: Number(document.querySelector("#viz-tokens").value),
+          })
+        : await postJson("/visualize", {
+            ...common,
+            prompt: promptInput.value,
+            max_new_tokens: Number(document.querySelector("#viz-tokens").value),
+          });
+    playTrace(data);
   } catch (error) {
     trace.innerHTML = "";
     result.textContent = String(error);
@@ -287,6 +397,10 @@ replayButton.addEventListener("click", () => {
   }
 });
 
+modeButtons.forEach((button) => {
+  button.addEventListener("click", () => setMode(button.dataset.mode));
+});
+
 fetch("/models")
   .then((response) => {
     if (!response.ok) {
@@ -300,4 +414,4 @@ fetch("/models")
   });
 
 modelSelect.addEventListener("change", updateModelMeta);
-renderPromptExamples();
+setMode("infill");
