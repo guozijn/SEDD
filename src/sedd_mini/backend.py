@@ -114,23 +114,26 @@ class MiniBackend:
         trace = [snapshot(0)]
         self.model.eval()
         with torch.no_grad():
-            for step in range(params.steps):
-                masked_any = False
+            total_steps = max(1, int(params.steps))
+            initial_mask_count = max(1, int(response_mask.sum().item()))
+            for step in range(total_steps):
                 t = torch.full(
                     (batch_size,),
-                    1.0 - (step / max(params.steps, 1)) * 0.999,
+                    1.0 - (step / total_steps) * 0.999,
                     device=self.device,
                 )
                 sigma = loglinear_noise(t)[0]
                 logits_all = self.model(ids.clone(), sigma)[..., : self.tokenizer.mask_id]
-                remaining_steps = max(1, params.steps - step)
+                desired_remaining = (initial_mask_count * max(0, total_steps - step - 1)) // total_steps
                 for batch_idx in range(batch_size):
                     masked = (ids[batch_idx] == self.tokenizer.mask_id) & response_mask
                     positions = masked.nonzero(as_tuple=False).flatten()
                     if positions.numel() == 0:
                         continue
-                    masked_any = True
-                    count = max(1, int(torch.ceil(torch.tensor(positions.numel() / remaining_steps)).item()))
+                    count = int(positions.numel()) - desired_remaining
+                    if count <= 0:
+                        continue
+                    count = min(int(positions.numel()), count)
                     order = torch.randperm(positions.numel(), device=self.device)
                     fill_positions = positions[order[:count]]
                     logits = logits_all[batch_idx, fill_positions] / max(params.temperature, 1.0e-5)
@@ -139,8 +142,6 @@ class MiniBackend:
                     sampled = torch.multinomial(probs, num_samples=1).squeeze(-1)
                     ids[batch_idx, fill_positions] = sampled
                 trace.append(snapshot(step + 1))
-                if not masked_any:
-                    break
 
         return {
             "backend": self.name,
@@ -229,23 +230,26 @@ class MiniBackend:
         trace = [snapshot(0)]
         self.model.eval()
         with torch.no_grad():
-            for step in range(int(params.steps)):
-                masked_any = False
+            total_steps = max(1, int(params.steps))
+            initial_mask_count = max(1, int(response_mask[0].sum().item()))
+            for step in range(total_steps):
                 t = torch.full(
                     (batch_size,),
-                    1.0 - (step / max(int(params.steps), 1)) * 0.999,
+                    1.0 - (step / total_steps) * 0.999,
                     device=self.device,
                 )
                 sigma = loglinear_noise(t)[0]
                 logits_all = self.model(ids.clone(), sigma)[..., : self.tokenizer.mask_id]
-                remaining_steps = max(1, int(params.steps) - step)
+                desired_remaining = (initial_mask_count * max(0, total_steps - step - 1)) // total_steps
                 for batch_idx in range(batch_size):
                     masked = (ids[batch_idx] == self.tokenizer.mask_id) & response_mask[batch_idx]
                     positions = masked.nonzero(as_tuple=False).flatten()
                     if positions.numel() == 0:
                         continue
-                    masked_any = True
-                    count = max(1, int(torch.ceil(torch.tensor(positions.numel() / remaining_steps)).item()))
+                    count = int(positions.numel()) - desired_remaining
+                    if count <= 0:
+                        continue
+                    count = min(int(positions.numel()), count)
                     order = torch.randperm(positions.numel(), device=self.device)
                     fill_positions = positions[order[:count]]
                     logits = logits_all[batch_idx, fill_positions] / max(float(params.temperature), 1.0e-5)
@@ -253,8 +257,6 @@ class MiniBackend:
                     probs = torch.softmax(logits, dim=-1)
                     ids[batch_idx, fill_positions] = torch.multinomial(probs, num_samples=1).squeeze(-1)
                 trace.append(snapshot(step + 1))
-                if not masked_any:
-                    break
 
         return {
             "backend": self.name,
