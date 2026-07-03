@@ -490,6 +490,13 @@ def load_official_components(
         model = modules.sedd_cls(config).to(device)
         model.load_state_dict(payload["model"], strict=True)
         return model, graph, noise, base_model_path, int(payload.get("step", 0))
+    try:
+        model = modules.sedd_cls.from_pretrained(str(model_path), local_files_only=True).to(device)
+        graph = modules.graph_lib.get_graph(model.config, device)
+        noise = modules.noise_lib.get_noise(model.config).to(device)
+        return model, graph, noise, model_path, 0
+    except Exception:
+        pass
     model, graph, noise = modules.load_model(model_path, device)
     return model, graph, noise, model_path, 0
 

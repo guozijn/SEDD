@@ -55,22 +55,12 @@ const GENERATION_EXAMPLES = [
 
 const INFILL_EXAMPLES = [
   {
-    label: "Front + End",
+    label: "One mask",
     prompt:
       "A bow and arrow is a traditional weapon that [MASK] and can be fired by a trained archer.",
   },
   {
-    label: "Split",
-    prompt:
-      "SEDD can keep the beginning of a sentence fixed, fill [MASK] in the middle, and still use [MASK] from the end.",
-  },
-  {
-    label: "Middle",
-    prompt:
-      "The scientist measured the water every morning because [MASK] can change quickly after heavy rain.",
-  },
-  {
-    label: "Science",
+    label: "Two masks",
     prompt:
       "The patient developed a [MASK] after bacteria entered the bloodstream, so the doctor checked for [MASK].",
   },

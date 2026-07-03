@@ -9,6 +9,13 @@
       "description": "Official louaaron/sedd-small exported before ARC tuning"
     },
     {
+      "id": "medium",
+      "label": "SEDD-medium base",
+      "backend": "official",
+      "model_path": "louaaron/sedd-medium",
+      "description": "Official louaaron/sedd-medium base model from the local Hugging Face cache"
+    },
+    {
       "id": "arc_sft",
       "label": "ARC SFT",
       "backend": "official",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 from pathlib import Path
 from typing import Any
@@ -93,6 +94,17 @@ def create_app(
     registry = load_registry(model_registry) if model_registry else None
     backend_cache: dict[str, Any] = {}
 
+    def clear_backend_cache() -> None:
+        backend_cache.clear()
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
     def registry_models() -> list[dict[str, Any]]:
         if not registry:
             return [
@@ -119,6 +131,8 @@ def create_app(
         resolved = resolve_model_id(model_id)
         if resolved in backend_cache:
             return backend_cache[resolved]
+        if backend_cache:
+            clear_backend_cache()
         if not registry:
             backend = create_backend(
                 backend_name,
