@@ -16,7 +16,14 @@ let activeMode = "infill";
 
 const GENERATION_EXAMPLES = [
   {
+    label: "Tiny story",
+    modelId: "mini_tinystories_pretrain",
+    prompt:
+      "Once upon a time, a small red bird found a shiny key under a leaf. The bird picked it up and ",
+  },
+  {
     label: "Fever",
+    modelId: "arc_lora_sft",
     prompt:
       "User: Answer the science multiple-choice question. Return only the final choice as `Answer: <letter>`.\n\n" +
       "Question: Which factor will most likely cause a person to develop a fever?\n" +
@@ -29,6 +36,7 @@ const GENERATION_EXAMPLES = [
   },
   {
     label: "Circuit",
+    modelId: "arc_lora_sft",
     prompt:
       "User: Answer the science multiple-choice question. Return only the final choice as `Answer: <letter>`.\n\n" +
       "Question: A student builds a circuit with a battery, wires, and a bulb. The bulb does not light. Which change would most likely allow the bulb to light?\n" +
@@ -41,6 +49,7 @@ const GENERATION_EXAMPLES = [
   },
   {
     label: "Moon",
+    modelId: "arc_lora_sft",
     prompt:
       "User: Answer the science multiple-choice question. Return only the final choice as `Answer: <letter>`.\n\n" +
       "Question: Why does the Moon appear to have different shapes during a month?\n" +
@@ -56,11 +65,13 @@ const GENERATION_EXAMPLES = [
 const INFILL_EXAMPLES = [
   {
     label: "One mask",
+    modelId: "base",
     prompt:
       "A bow and arrow is a traditional weapon that [MASK] and can be fired by a trained archer.",
   },
   {
     label: "Two masks",
+    modelId: "base",
     prompt:
       "The patient developed a [MASK] after bacteria entered the bloodstream, so the doctor checked for [MASK].",
   },
@@ -99,6 +110,10 @@ function renderPromptExamples() {
     button.textContent = example.label;
     button.addEventListener("click", () => {
       promptInput.value = example.prompt;
+      if (example.modelId && availableModels.some((model) => model.id === example.modelId)) {
+        modelSelect.value = example.modelId;
+        updateModelMeta();
+      }
       promptInput.focus();
     });
     promptExamples.appendChild(button);
