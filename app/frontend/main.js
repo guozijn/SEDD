@@ -284,7 +284,7 @@ function selectPreferredModel() {
   if (availableModels.length === 0) {
     return;
   }
-  const preferredId = activeMode === "infill" ? "base" : "arc_sft";
+  const preferredId = activeMode === "infill" ? "base" : "arc_lora_sft";
   if (availableModels.some((model) => model.id === preferredId)) {
     modelSelect.value = preferredId;
     updateModelMeta();

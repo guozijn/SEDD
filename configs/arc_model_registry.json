@@ -1,5 +1,5 @@
 {
-  "default_model_id": "arc_sft",
+  "default_model_id": "arc_lora_sft",
   "models": [
     {
       "id": "base",
@@ -16,18 +16,18 @@
       "description": "Official louaaron/sedd-medium base model from the local Hugging Face cache"
     },
     {
-      "id": "arc_sft",
-      "label": "ARC SFT",
+      "id": "arc_lora_sft",
+      "label": "ARC LoRA SFT",
       "backend": "official",
-      "model_path": "runs/arc_models/arc_sft/checkpoint_last.pt",
-      "description": "Official SEDD-small fine-tuned on ARC-Easy multiple-choice science QA"
+      "model_path": "runs/arc_models/arc_lora_sft/checkpoint_last.pt",
+      "description": "Official SEDD-small LoRA fine-tuned on ARC-Easy, merged for serving"
     },
     {
-      "id": "arc_rl",
-      "label": "ARC SFT + RL",
+      "id": "arc_dcolt_rl",
+      "label": "ARC DCoLT RL",
       "backend": "official",
-      "model_path": "runs/arc_models/arc_rl/checkpoint_last.pt",
-      "description": "ARC SFT checkpoint post-trained with exact-answer reward on ARC-Challenge prompts"
+      "model_path": "runs/arc_models/arc_dcolt_rl/checkpoint_last.pt",
+      "description": "ARC LoRA SFT checkpoint post-trained with DCoLT-style grouped outcome RL on ARC-Challenge"
     }
   ]
 }

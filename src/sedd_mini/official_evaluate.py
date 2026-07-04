@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from .data import TokenDataset, collate_batch
 from .official_backend import load_official_components
 from .official_finetune import evaluate
-from .official_posttrain_rl import official_sample_trace
+from .official_posttrain_rl import load_gpt2_tokenizer, official_sample_trace
 from .reward import compute_reward
 from .utils import get_device, json_log, set_seed
 
@@ -69,11 +69,7 @@ def main() -> None:
         "batches": min(args.max_batches, len(loader)),
     }
     if args.prompts_path and args.reward_samples > 0:
-        try:
-            from transformers import GPT2TokenizerFast
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError("Reward eval requires transformers.") from exc
-        tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
+        tokenizer = load_gpt2_tokenizer()
         prompts = load_prompts(args.prompts_path, args.reward_samples)
         rewards: list[float] = []
         texts: list[str] = []

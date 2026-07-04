@@ -1,17 +1,130 @@
 from __future__ import annotations
 
 import argparse
+import math
 import time
 from pathlib import Path
 from typing import Any
 
 import torch
+from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .data import TokenDataset, collate_batch
 from .official_backend import load_official_components, save_official_checkpoint
 from .utils import cycle, get_device, json_log, learning_rate, set_seed
+
+
+class LoRALinear(nn.Module):
+    def __init__(
+        self,
+        base: nn.Linear,
+        *,
+        rank: int,
+        alpha: float,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        if rank <= 0:
+            raise ValueError("LoRA rank must be positive")
+        self.base = base
+        self.rank = int(rank)
+        self.alpha = float(alpha)
+        self.scaling = self.alpha / self.rank
+        self.dropout = nn.Dropout(dropout)
+        self.lora_a = nn.Linear(base.in_features, self.rank, bias=False)
+        self.lora_b = nn.Linear(self.rank, base.out_features, bias=False)
+        nn.init.kaiming_uniform_(self.lora_a.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.lora_b.weight)
+        for param in self.base.parameters():
+            param.requires_grad_(False)
+        self.to(device=base.weight.device)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        update = self.lora_b(self.lora_a(self.dropout(x))) * self.scaling
+        return self.base(x) + update.to(dtype=self.base.weight.dtype)
+
+    def merged_weight(self) -> torch.Tensor:
+        update = self.lora_b.weight @ self.lora_a.weight
+        return self.base.weight.detach().float() + update.detach().float() * self.scaling
+
+
+def _target_matches(name: str, targets: list[str]) -> bool:
+    return any(name == target or name.endswith(f".{target}") for target in targets)
+
+
+def apply_lora(
+    model: nn.Module,
+    *,
+    rank: int,
+    alpha: float,
+    dropout: float,
+    targets: list[str],
+) -> list[str]:
+    for param in model.parameters():
+        param.requires_grad_(False)
+
+    replaced: list[str] = []
+    for name, module in list(model.named_modules()):
+        if name.startswith("sigma_map."):
+            continue
+        if not isinstance(module, nn.Linear) or not _target_matches(name, targets):
+            continue
+        parent_name, child_name = name.rsplit(".", 1) if "." in name else ("", name)
+        parent = model.get_submodule(parent_name) if parent_name else model
+        setattr(parent, child_name, LoRALinear(module, rank=rank, alpha=alpha, dropout=dropout))
+        replaced.append(name)
+    if not replaced:
+        raise ValueError(f"No Linear modules matched LoRA targets: {targets}")
+    return replaced
+
+
+def trainable_parameter_count(model: nn.Module) -> int:
+    return sum(param.numel() for param in model.parameters() if param.requires_grad)
+
+
+def total_parameter_count(model: nn.Module) -> int:
+    return sum(param.numel() for param in model.parameters())
+
+
+def merged_lora_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
+    lora_modules = {
+        name: module for name, module in model.named_modules() if isinstance(module, LoRALinear)
+    }
+    state: dict[str, torch.Tensor] = {}
+    for key, value in model.state_dict().items():
+        if any(key.startswith(f"{prefix}.") for prefix in lora_modules):
+            continue
+        state[key] = value.detach().cpu()
+    for prefix, module in lora_modules.items():
+        state[f"{prefix}.weight"] = module.merged_weight().cpu()
+        if module.base.bias is not None:
+            state[f"{prefix}.bias"] = module.base.bias.detach().cpu()
+    return state
+
+
+def save_merged_lora_checkpoint(
+    path: str | Path,
+    *,
+    model: nn.Module,
+    base_model_path: str,
+    step: int,
+    optimizer: torch.optim.Optimizer | None,
+    extra: dict[str, Any],
+) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "backend": "official",
+        "base_model_path": base_model_path,
+        "model": merged_lora_state_dict(model),
+        "step": step,
+        "extra": extra,
+    }
+    if optimizer is not None:
+        payload["optimizer"] = optimizer.state_dict()
+    torch.save(payload, path)
 
 
 def official_score_entropy_loss(
@@ -84,6 +197,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save-every", type=int, default=50)
     parser.add_argument("--log-every", type=int, default=1)
     parser.add_argument("--max-eval-batches", type=int, default=10)
+    parser.add_argument("--lora-rank", type=int, default=8)
+    parser.add_argument("--lora-alpha", type=float, default=16.0)
+    parser.add_argument("--lora-dropout", type=float, default=0.05)
+    parser.add_argument(
+        "--lora-targets",
+        default="attn_qkv,attn_out,mlp.0,mlp.2",
+        help="Comma-separated Linear module suffixes to adapt. Set rank=0 for full fine-tune.",
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=31)
     return parser
@@ -102,6 +223,16 @@ def main() -> None:
         repo_path=args.official_repo,
         device=device,
     )
+    lora_targets = [target.strip() for target in args.lora_targets.split(",") if target.strip()]
+    lora_modules: list[str] = []
+    if args.lora_rank > 0:
+        lora_modules = apply_lora(
+            model,
+            rank=args.lora_rank,
+            alpha=args.lora_alpha,
+            dropout=args.lora_dropout,
+            targets=lora_targets,
+        )
     model.train()
     train_data = TokenDataset(args.train_path)
     valid_data = TokenDataset(args.valid_path)
@@ -119,9 +250,8 @@ def main() -> None:
         collate_fn=collate_batch,
         drop_last=False,
     )
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
-    )
+    trainable_params = [param for param in model.parameters() if param.requires_grad]
+    optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
     if args.resume:
         payload = torch.load(args.resume, map_location=device)
         if "optimizer" in payload:
@@ -139,6 +269,12 @@ def main() -> None:
             "loaded_step": loaded_step,
             "train_rows": len(train_data),
             "valid_rows": len(valid_data),
+            "lora_rank": args.lora_rank,
+            "lora_alpha": args.lora_alpha,
+            "lora_dropout": args.lora_dropout,
+            "lora_modules": lora_modules,
+            "trainable_parameters": trainable_parameter_count(model),
+            "total_parameters": total_parameter_count(model),
         }
     )
 
@@ -181,23 +317,57 @@ def main() -> None:
             )
             json_log({"event": "official_sft_eval", "step": step, "valid_loss": valid_loss})
         if step % args.save_every == 0:
-            save_official_checkpoint(
-                out_dir / f"checkpoint_{step}.pt",
-                model=model,
-                base_model_path=base_model_path,
-                step=step,
-                optimizer=optimizer,
-                extra={"source_model_path": args.model_path, "stage": "sft"},
-            )
+            if args.lora_rank > 0:
+                save_merged_lora_checkpoint(
+                    out_dir / f"checkpoint_{step}.pt",
+                    model=model,
+                    base_model_path=base_model_path,
+                    step=step,
+                    optimizer=optimizer,
+                    extra={
+                        "source_model_path": args.model_path,
+                        "stage": "lora_sft",
+                        "lora_rank": args.lora_rank,
+                        "lora_alpha": args.lora_alpha,
+                        "lora_dropout": args.lora_dropout,
+                        "lora_targets": lora_targets,
+                    },
+                )
+            else:
+                save_official_checkpoint(
+                    out_dir / f"checkpoint_{step}.pt",
+                    model=model,
+                    base_model_path=base_model_path,
+                    step=step,
+                    optimizer=optimizer,
+                    extra={"source_model_path": args.model_path, "stage": "sft"},
+                )
 
-    save_official_checkpoint(
-        out_dir / "checkpoint_last.pt",
-        model=model,
-        base_model_path=base_model_path,
-        step=args.steps,
-        optimizer=optimizer,
-        extra={"source_model_path": args.model_path, "stage": "sft"},
-    )
+    if args.lora_rank > 0:
+        save_merged_lora_checkpoint(
+            out_dir / "checkpoint_last.pt",
+            model=model,
+            base_model_path=base_model_path,
+            step=args.steps,
+            optimizer=optimizer,
+            extra={
+                "source_model_path": args.model_path,
+                "stage": "lora_sft",
+                "lora_rank": args.lora_rank,
+                "lora_alpha": args.lora_alpha,
+                "lora_dropout": args.lora_dropout,
+                "lora_targets": lora_targets,
+            },
+        )
+    else:
+        save_official_checkpoint(
+            out_dir / "checkpoint_last.pt",
+            model=model,
+            base_model_path=base_model_path,
+            step=args.steps,
+            optimizer=optimizer,
+            extra={"source_model_path": args.model_path, "stage": "sft"},
+        )
     json_log({"event": "official_sft_done", "checkpoint": str(out_dir / "checkpoint_last.pt")})
 
 

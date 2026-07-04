@@ -8,11 +8,11 @@ def test_models_endpoint_exposes_registry_entries(tmp_path):
     registry_path.write_text(
         json.dumps(
             {
-                "default_model_id": "arc_sft",
+                "default_model_id": "arc_lora_sft",
                 "models": [
                     {"id": "base", "label": "SEDD small base", "backend": "official"},
-                    {"id": "arc_sft", "label": "ARC SFT", "backend": "official"},
-                    {"id": "arc_rl", "label": "ARC SFT + RL", "backend": "official"},
+                    {"id": "arc_lora_sft", "label": "ARC LoRA SFT", "backend": "official"},
+                    {"id": "arc_dcolt_rl", "label": "ARC DCoLT RL", "backend": "official"},
                 ],
             }
         ),
@@ -23,8 +23,8 @@ def test_models_endpoint_exposes_registry_entries(tmp_path):
     models_route = next(route for route in app.routes if getattr(route, "path", None) == "/models")
     payload = models_route.endpoint()
 
-    assert payload["default_model_id"] == "arc_sft"
-    assert [model["id"] for model in payload["models"]] == ["base", "arc_sft", "arc_rl"]
+    assert payload["default_model_id"] == "arc_lora_sft"
+    assert [model["id"] for model in payload["models"]] == ["base", "arc_lora_sft", "arc_dcolt_rl"]
 
 
 def test_models_endpoint_auto_discovers_arc_registry(tmp_path, monkeypatch):
@@ -34,11 +34,11 @@ def test_models_endpoint_auto_discovers_arc_registry(tmp_path, monkeypatch):
     registry_path.write_text(
         json.dumps(
             {
-                "default_model_id": "arc_sft",
+                "default_model_id": "arc_lora_sft",
                 "models": [
                     {"id": "base", "label": "SEDD-small base", "backend": "official"},
-                    {"id": "arc_sft", "label": "ARC SFT", "backend": "official"},
-                    {"id": "arc_rl", "label": "ARC SFT + RL", "backend": "official"},
+                    {"id": "arc_lora_sft", "label": "ARC LoRA SFT", "backend": "official"},
+                    {"id": "arc_dcolt_rl", "label": "ARC DCoLT RL", "backend": "official"},
                 ],
             }
         ),
@@ -50,5 +50,5 @@ def test_models_endpoint_auto_discovers_arc_registry(tmp_path, monkeypatch):
     models_route = next(route for route in app.routes if getattr(route, "path", None) == "/models")
     payload = models_route.endpoint()
 
-    assert payload["default_model_id"] == "arc_sft"
-    assert [model["id"] for model in payload["models"]] == ["base", "arc_sft", "arc_rl"]
+    assert payload["default_model_id"] == "arc_lora_sft"
+    assert [model["id"] for model in payload["models"]] == ["base", "arc_lora_sft", "arc_dcolt_rl"]

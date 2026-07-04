@@ -7,12 +7,25 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 
+from .mcqa_data import MCQARecord, exact_choice_reward, extract_choice, load_mcqa_records
 from .official_backend import load_official_components, save_official_checkpoint
-from .reward import compute_reward
 from .sampling import top_k_top_p_filter
 from .utils import get_device, json_log, set_seed
+
+
+def load_gpt2_tokenizer() -> Any:
+    try:
+        from transformers import GPT2TokenizerFast
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("DCoLT SEDD training requires transformers.") from exc
+
+    try:
+        return GPT2TokenizerFast.from_pretrained("gpt2", local_files_only=True)
+    except Exception:  # noqa: BLE001
+        return GPT2TokenizerFast.from_pretrained("gpt2")
 
 
 @dataclass
@@ -22,18 +35,29 @@ class OfficialTrace:
     logprob_sum: torch.Tensor
     ref_logprob_sum: torch.Tensor
     entropy_sum: torch.Tensor
+    action_count: int
 
 
-def load_prompts(path: str | Path) -> list[str]:
-    path = Path(path)
-    if path.exists():
-        prompts = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        if prompts:
-            return prompts
-    return [
-        "Explain score entropy for discrete diffusion.",
-        "Describe how RL can be adapted to SEDD.",
-    ]
+@dataclass
+class DCoLTRollout:
+    trace: OfficialTrace
+    reward: float
+    prediction: str
+    text: str
+    gold: str
+
+
+def group_normalized_advantages(rewards: list[float], *, eps: float = 1.0e-6) -> list[float]:
+    if not rewards:
+        return []
+    values = torch.tensor(rewards, dtype=torch.float32)
+    if values.numel() < 2:
+        return [0.0]
+    centered = values - values.mean()
+    std = values.std(unbiased=False)
+    if float(std) < eps:
+        return [0.0 for _ in rewards]
+    return (centered / (std + eps)).tolist()
 
 
 def choose_positions(masked: torch.Tensor, step: int, steps: int) -> torch.Tensor:
@@ -42,7 +66,20 @@ def choose_positions(masked: torch.Tensor, step: int, steps: int) -> torch.Tenso
         return positions
     remaining_steps = max(1, steps - step)
     count = max(1, int(torch.ceil(torch.tensor(positions.numel() / remaining_steps)).item()))
-    return positions[:count]
+    order = torch.randperm(positions.numel(), device=positions.device)
+    return positions[order[:count]]
+
+
+def filtered_log_probs(logits: torch.Tensor, *, top_k: int, top_p: float) -> torch.Tensor:
+    scaled = logits.float()
+    filtered = top_k_top_p_filter(scaled, top_k=top_k, top_p=top_p)
+    log_probs = F.log_softmax(filtered, dim=-1)
+    probs = log_probs.exp()
+    bad_rows = (~torch.isfinite(probs).all(dim=-1)) | (probs.sum(dim=-1) <= 0)
+    if bad_rows.any():
+        log_probs = log_probs.clone()
+        log_probs[bad_rows] = F.log_softmax(scaled[bad_rows], dim=-1)
+    return log_probs
 
 
 def official_sample_trace(
@@ -72,32 +109,39 @@ def official_sample_trace(
     ids[0, response_slice] = mask_id
     response_mask = torch.zeros(seq_len, dtype=torch.bool, device=device)
     response_mask[response_slice] = True
+
     logprob_sum = torch.zeros((), device=device)
     ref_logprob_sum = torch.zeros((), device=device)
     entropy_sum = torch.zeros((), device=device)
+    action_count = 0
 
-    for step in range(steps):
+    for step in range(max(1, steps)):
         masked = (ids[0] == mask_id) & response_mask
-        fill_positions = choose_positions(masked, step, steps)
+        fill_positions = choose_positions(masked, step, max(1, steps))
         if fill_positions.numel() == 0:
             break
+
         t = torch.full((1,), 1.0 - (step / max(steps, 1)) * 0.999, device=device)
         sigma = noise(t)[0]
         logits = model(ids.clone(), sigma)[0, fill_positions, :mask_id]
-        logits = top_k_top_p_filter(logits / max(temperature, 1.0e-5), top_k=top_k, top_p=top_p)
-        probs = torch.softmax(logits, dim=-1)
+        logits = logits / max(temperature, 1.0e-5)
+        log_probs = filtered_log_probs(logits, top_k=top_k, top_p=top_p)
+        probs = log_probs.exp()
         sampled = torch.multinomial(probs, num_samples=1).squeeze(-1)
-        action_logprobs = torch.log(torch.gather(probs, 1, sampled[:, None]).squeeze(-1).clamp_min(1.0e-8))
-        entropy = -(probs * torch.log(probs.clamp_min(1.0e-8))).sum(dim=-1)
-        logprob_sum = logprob_sum + action_logprobs.sum()
-        entropy_sum = entropy_sum + entropy.sum()
+        selected_log_probs = log_probs.gather(1, sampled[:, None]).squeeze(-1)
+        safe_log_probs = torch.where(torch.isfinite(log_probs), log_probs, torch.zeros_like(log_probs))
+        entropy = -(probs * safe_log_probs).sum(dim=-1)
+
         with torch.no_grad():
             ref_logits = reference_model(ids.clone(), sigma)[0, fill_positions, :mask_id]
-            ref_probs = torch.softmax(ref_logits / max(temperature, 1.0e-5), dim=-1)
-            ref_logprobs = torch.log(
-                torch.gather(ref_probs, 1, sampled[:, None]).squeeze(-1).clamp_min(1.0e-8)
-            )
-        ref_logprob_sum = ref_logprob_sum + ref_logprobs.sum()
+            ref_logits = ref_logits / max(temperature, 1.0e-5)
+            ref_log_probs = F.log_softmax(ref_logits, dim=-1)
+            selected_ref_log_probs = ref_log_probs.gather(1, sampled[:, None]).squeeze(-1)
+
+        logprob_sum = logprob_sum + selected_log_probs.sum()
+        ref_logprob_sum = ref_logprob_sum + selected_ref_log_probs.sum()
+        entropy_sum = entropy_sum + entropy.sum()
+        action_count += int(sampled.numel())
         ids[0, fill_positions] = sampled
 
     ids[ids == mask_id] = eos
@@ -107,29 +151,114 @@ def official_sample_trace(
         logprob_sum=logprob_sum,
         ref_logprob_sum=ref_logprob_sum,
         entropy_sum=entropy_sum,
+        action_count=action_count,
     )
 
 
+def rollout_record(
+    *,
+    model: torch.nn.Module,
+    reference_model: torch.nn.Module,
+    noise: Any,
+    tokenizer: Any,
+    record: MCQARecord,
+    seq_len: int,
+    mask_id: int,
+    max_new_tokens: int,
+    steps: int,
+    temperature: float,
+    top_k: int,
+    top_p: float,
+    device: torch.device,
+) -> DCoLTRollout:
+    trace = official_sample_trace(
+        model,
+        reference_model,
+        noise,
+        tokenizer,
+        record.prompt,
+        seq_len=seq_len,
+        mask_id=mask_id,
+        max_new_tokens=max_new_tokens,
+        steps=steps,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
+        device=device,
+    )
+    text = tokenizer.decode(trace.response_ids.tolist(), skip_special_tokens=True)
+    prediction = extract_choice(text, record.labels)
+    reward = exact_choice_reward(text, record.answer, record.labels)
+    return DCoLTRollout(
+        trace=trace,
+        reward=reward,
+        prediction=prediction,
+        text=text,
+        gold=record.answer,
+    )
+
+
+def dcolt_loss(
+    rollouts: list[DCoLTRollout],
+    advantages: list[float],
+    *,
+    clip_eps: float,
+    beta: float,
+    entropy_coef: float,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    losses: list[torch.Tensor] = []
+    policy_losses: list[torch.Tensor] = []
+    kl_terms: list[torch.Tensor] = []
+    entropy_terms: list[torch.Tensor] = []
+
+    for rollout, advantage in zip(rollouts, advantages, strict=True):
+        trace = rollout.trace
+        action_count = max(1, trace.action_count)
+        logprob = trace.logprob_sum / action_count
+        old_logprob = logprob.detach()
+        ratio = torch.exp((logprob - old_logprob).clamp(min=-20.0, max=20.0))
+        advantage_tensor = torch.tensor(float(advantage), device=logprob.device)
+        unclipped = ratio * advantage_tensor
+        clipped = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * advantage_tensor
+        policy_loss = -torch.minimum(unclipped, clipped)
+        kl_term = (trace.logprob_sum - trace.ref_logprob_sum) / action_count
+        entropy_term = trace.entropy_sum / action_count
+        loss = policy_loss + beta * kl_term - entropy_coef * entropy_term
+        losses.append(loss)
+        policy_losses.append(policy_loss.detach())
+        kl_terms.append(kl_term.detach())
+        entropy_terms.append(entropy_term.detach())
+
+    total = torch.stack(losses).mean()
+    return total, {
+        "policy_loss": float(torch.stack(policy_losses).mean().cpu()) if policy_losses else 0.0,
+        "kl_term": float(torch.stack(kl_terms).mean().cpu()) if kl_terms else 0.0,
+        "entropy": float(torch.stack(entropy_terms).mean().cpu()) if entropy_terms else 0.0,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="RL post-train official SEDD checkpoints.")
-    parser.add_argument("--model-path", default="runs/official_sft/checkpoint_last.pt")
-    parser.add_argument("--reference-model-path", default="louaaron/sedd-small")
+    parser = argparse.ArgumentParser(description="DCoLT post-train an official SEDD checkpoint.")
+    parser.add_argument("--model-path", default="runs/arc_models/arc_sft/checkpoint_last.pt")
+    parser.add_argument("--reference-model-path", default="runs/arc_models/base/checkpoint_base.pt")
     parser.add_argument("--official-repo", default="external/Score-Entropy-Discrete-Diffusion")
-    parser.add_argument("--prompts-path", default="data/processed/rl_prompts.txt")
-    parser.add_argument("--out-dir", default="runs/official_rl")
-    parser.add_argument("--updates", type=int, default=20)
-    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--records-path", default="data/processed/arc_challenge_rl_train.jsonl")
+    parser.add_argument("--out-dir", default="runs/arc_models/arc_dcolt_rl")
+    parser.add_argument("--updates", type=int, default=50)
+    parser.add_argument("--batch-size", type=int, default=1, help="Prompt groups per optimizer update.")
+    parser.add_argument("--num-generations", type=int, default=4, help="Rollouts per prompt.")
+    parser.add_argument("--repeat-times", type=int, default=1, help="Extra rollout repeats per prompt.")
     parser.add_argument("--lr", type=float, default=5.0e-6)
     parser.add_argument("--seq-len", type=int, default=256)
-    parser.add_argument("--max-new-tokens", type=int, default=64)
-    parser.add_argument("--sample-steps", type=int, default=8)
+    parser.add_argument("--max-new-tokens", type=int, default=12)
+    parser.add_argument("--sample-steps", type=int, default=4)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--top-p", type=float, default=0.95)
-    parser.add_argument("--kl-coef", type=float, default=0.02)
+    parser.add_argument("--clip-eps", type=float, default=0.2)
+    parser.add_argument("--beta", type=float, default=0.02)
     parser.add_argument("--entropy-coef", type=float, default=0.0)
-    parser.add_argument("--reward-kind", default="heuristic_helpfulness")
-    parser.add_argument("--save-every", type=int, default=10)
+    parser.add_argument("--save-every", type=int, default=25)
     parser.add_argument("--log-every", type=int, default=1)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=37)
@@ -143,6 +272,10 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    records = load_mcqa_records(args.records_path)
+    if not records:
+        raise ValueError(f"no MCQA records found at {args.records_path}")
+
     model, graph, noise, base_model_path, loaded_step = load_official_components(
         args.model_path,
         repo_path=args.official_repo,
@@ -155,94 +288,124 @@ def main() -> None:
     )
     for param in reference_model.parameters():
         param.requires_grad_(False)
-    try:
-        from transformers import GPT2TokenizerFast
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError("Official RL requires transformers. Run `uv sync --extra official`.") from exc
-    tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
+    model.train()
+    reference_model.eval()
+
+    tokenizer = load_gpt2_tokenizer()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    prompts = load_prompts(args.prompts_path)
     seq_len = min(args.seq_len, int(model.config.model.length))
     mask_id = int(graph.dim - 1)
-    reward_config = {"kind": args.reward_kind, "min_chars": 80}
-    baseline = 0.0
+    rollouts_per_prompt = max(1, args.num_generations) * max(1, args.repeat_times)
 
     json_log(
         {
-            "event": "official_rl_start",
+            "event": "dcolt_start",
             "device": str(device),
             "model_path": args.model_path,
             "reference_model_path": args.reference_model_path,
             "base_model_path": base_model_path,
             "loaded_step": loaded_step,
+            "records_path": args.records_path,
+            "records": len(records),
             "seq_len": seq_len,
-            "prompts": len(prompts),
+            "max_new_tokens": args.max_new_tokens,
+            "sample_steps": args.sample_steps,
+            "batch_size": args.batch_size,
+            "num_generations": args.num_generations,
+            "repeat_times": args.repeat_times,
+            "rollouts_per_prompt": rollouts_per_prompt,
+            "clip_eps": args.clip_eps,
+            "beta": args.beta,
         }
     )
 
-    for update in tqdm(range(1, args.updates + 1)):
+    for update in tqdm(range(1, args.updates + 1), desc="official sedd dcolt"):
         optimizer.zero_grad(set_to_none=True)
-        policy_terms: list[torch.Tensor] = []
-        kl_terms: list[torch.Tensor] = []
-        entropy_terms: list[torch.Tensor] = []
-        rewards: list[float] = []
-        samples: list[str] = []
-        for _ in range(args.batch_size):
-            prompt = random.choice(prompts)
-            trace = official_sample_trace(
-                model,
-                reference_model,
-                noise,
-                tokenizer,
-                prompt,
-                seq_len=seq_len,
-                mask_id=mask_id,
-                max_new_tokens=args.max_new_tokens,
-                steps=args.sample_steps,
-                temperature=args.temperature,
-                top_k=args.top_k,
-                top_p=args.top_p,
-                device=device,
+        update_rollouts: list[DCoLTRollout] = []
+        update_advantages: list[float] = []
+
+        for _ in range(max(1, args.batch_size)):
+            record = random.choice(records)
+            group = [
+                rollout_record(
+                    model=model,
+                    reference_model=reference_model,
+                    noise=noise,
+                    tokenizer=tokenizer,
+                    record=record,
+                    seq_len=seq_len,
+                    mask_id=mask_id,
+                    max_new_tokens=args.max_new_tokens,
+                    steps=args.sample_steps,
+                    temperature=args.temperature,
+                    top_k=args.top_k,
+                    top_p=args.top_p,
+                    device=device,
+                )
+                for _ in range(rollouts_per_prompt)
+            ]
+            update_rollouts.extend(group)
+            update_advantages.extend(group_normalized_advantages([rollout.reward for rollout in group]))
+
+        valid_samples = sum(1 for advantage in update_advantages if abs(advantage) > 1.0e-8)
+        if valid_samples == 0:
+            json_log(
+                {
+                    "event": "dcolt_skip",
+                    "update": update,
+                    "reason": "zero_group_variance",
+                    "reward": sum(rollout.reward for rollout in update_rollouts)
+                    / max(len(update_rollouts), 1),
+                }
             )
-            text = tokenizer.decode(trace.response_ids.tolist(), skip_special_tokens=True)
-            reward = compute_reward(text, reward_config)
-            rewards.append(reward)
-            samples.append(text)
-            advantage = reward - baseline
-            policy_terms.append(-torch.tensor(advantage, device=device) * trace.logprob_sum)
-            kl_terms.append(trace.logprob_sum - trace.ref_logprob_sum)
-            entropy_terms.append(trace.entropy_sum)
-        mean_reward = sum(rewards) / max(len(rewards), 1)
-        baseline = 0.9 * baseline + 0.1 * mean_reward
-        policy_loss = torch.stack(policy_terms).mean()
-        kl_term = torch.stack(kl_terms).mean()
-        entropy_term = torch.stack(entropy_terms).mean()
-        loss = policy_loss + args.kl_coef * kl_term - args.entropy_coef * entropy_term
+            continue
+
+        loss, metrics = dcolt_loss(
+            update_rollouts,
+            update_advantages,
+            clip_eps=args.clip_eps,
+            beta=args.beta,
+            entropy_coef=args.entropy_coef,
+        )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
+
+        rewards = [rollout.reward for rollout in update_rollouts]
         if update % args.log_every == 0:
-            json_log(
-                {
-                    "event": "official_rl_update",
-                    "update": update,
-                    "loss": float(loss.detach().cpu()),
-                    "policy_loss": float(policy_loss.detach().cpu()),
-                    "kl_term": float(kl_term.detach().cpu()),
-                    "entropy": float(entropy_term.detach().cpu()),
-                    "reward": mean_reward,
-                    "baseline": baseline,
-                    "sample": samples[0][:240],
-                }
-            )
+            sample = update_rollouts[0]
+            payload = {
+                "event": "dcolt_update",
+                "update": update,
+                "loss": float(loss.detach().cpu()),
+                "reward": sum(rewards) / max(len(rewards), 1),
+                "reward_min": min(rewards),
+                "reward_max": max(rewards),
+                "valid_samples": valid_samples,
+                "gold": sample.gold,
+                "pred": sample.prediction or "?",
+                "sample": sample.text[:180],
+            }
+            payload.update(metrics)
+            json_log(payload)
+
         if update % args.save_every == 0:
             save_official_checkpoint(
-                out_dir / f"checkpoint_rl_{update}.pt",
+                out_dir / f"checkpoint_dcolt_{update}.pt",
                 model=model,
                 base_model_path=base_model_path,
                 step=update,
                 optimizer=optimizer,
-                extra={"stage": "rl", "source_model_path": args.model_path},
+                extra={
+                    "stage": "dcolt_rl",
+                    "source_model_path": args.model_path,
+                    "reference_model_path": args.reference_model_path,
+                    "records_path": args.records_path,
+                    "num_generations": args.num_generations,
+                    "repeat_times": args.repeat_times,
+                    "clip_eps": args.clip_eps,
+                    "beta": args.beta,
+                },
             )
 
     save_official_checkpoint(
@@ -251,9 +414,18 @@ def main() -> None:
         base_model_path=base_model_path,
         step=args.updates,
         optimizer=optimizer,
-        extra={"stage": "rl", "source_model_path": args.model_path},
+        extra={
+            "stage": "dcolt_rl",
+            "source_model_path": args.model_path,
+            "reference_model_path": args.reference_model_path,
+            "records_path": args.records_path,
+            "num_generations": args.num_generations,
+            "repeat_times": args.repeat_times,
+            "clip_eps": args.clip_eps,
+            "beta": args.beta,
+        },
     )
-    json_log({"event": "official_rl_done", "checkpoint": str(out_dir / "checkpoint_last.pt")})
+    json_log({"event": "dcolt_done", "checkpoint": str(out_dir / "checkpoint_last.pt")})
 
 
 if __name__ == "__main__":

@@ -26,7 +26,10 @@ def get_gpt2_tokenizer():
         raise RuntimeError(
             "Official data preparation requires transformers. Run `uv sync --extra official`."
         ) from exc
-    tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
+    try:
+        tokenizer = GPT2TokenizerFast.from_pretrained("gpt2", local_files_only=True)
+    except Exception:  # noqa: BLE001
+        tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
     tokenizer.pad_token = tokenizer.eos_token
     return tokenizer
 
