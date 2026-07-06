@@ -1,19 +1,24 @@
-# SEDD Take-Home Project
+# SEDD Pipeline Project
 
 This repo is a compact, runnable implementation of a Score Entropy Discrete
-Diffusion language-modeling pipeline for the Blue Whale AI take-home exam.
+Diffusion language-modeling pipeline. It contains both a small byte-level
+implementation for end-to-end experimentation and an official SEDD backend for
+`louaaron/sedd-small` / `louaaron/sedd-medium`.
 
 It includes:
 
-- Byte-level data preparation for pretraining and supervised fine-tuning.
-- A bidirectional Transformer score network.
-- Absorbing-state score entropy training loss.
-- Prompt-conditioned SFT by keeping prompt tokens visible and applying loss only to answer tokens.
-- RL post-training with denoising-trajectory policy gradients and a frozen reference KL term.
+- TinyStories mini pretraining and a compact mini SFT continuation.
+- A bidirectional byte-level Transformer score network.
+- Absorbing-state score entropy training loss with log-linear noise.
+- Prompt-conditioned SFT by keeping prompt tokens visible and applying loss only
+  to answer tokens.
+- Official SEDD LoRA SFT on ARC-Easy, saved as a merged serving checkpoint.
+- Official SEDD DCoLT-style grouped RL on ARC-Challenge with group-normalized
+  advantages, PPO-style clipping, and a frozen reference KL term.
 - Evaluation, sampling, infilling, FastAPI backend, and browser frontend.
-- Default official backend for `louaaron/sedd-small` / `louaaron/sedd-medium`.
+- Frontend model switching for mini, official base, official medium, LoRA SFT,
+  and DCoLT RL checkpoints.
 - Remote `uv` and `rsync` scripts for `desktop-0f24dvl`.
-- Theory notes and interview Q&A in `docs/`.
 
 The implementation is intentionally small enough to smoke-test quickly, while the
 interfaces are the same ones needed for longer training on a 16 GB GPU.
@@ -29,12 +34,34 @@ uv run sedd-eval --checkpoint runs/sft_tiny/checkpoint_last.pt --data data/proce
 uv run sedd-sample --backend mini --checkpoint runs/sft_tiny/checkpoint_last.pt --prompt "Explain SEDD briefly."
 ```
 
-For the notebook walkthrough, including TinyStories compact pretraining,
-ARC-Easy SFT, and ARC-Challenge exact-reward RL:
+For the notebook walkthrough, including TinyStories compact pretraining, mini
+SFT, official ARC-Easy LoRA SFT, official ARC-Challenge DCoLT RL, evaluation,
+and inference:
 
 ```bash
 uv sync --extra notebook --extra official --extra datasets
 scripts/run_notebook.sh
+```
+
+The committed notebook [notebooks/sedd_pipeline.ipynb](notebooks/sedd_pipeline.ipynb)
+is an executed version. The last remote run used:
+
+```bash
+FRESH_RUN=1 \
+DEVICE=cuda \
+MINI_PRETRAIN_STEPS=2000 \
+MINI_SFT_STEPS=50 \
+OFFICIAL_SFT_STEPS=1000 \
+RL_UPDATES=100 \
+SAMPLE_STEPS=4 \
+MAX_NEW_TOKENS=12 \
+uv run --extra notebook jupyter nbconvert \
+  --to notebook \
+  --execute notebooks/sedd_pipeline.ipynb \
+  --output sedd_pipeline.ipynb \
+  --output-dir notebooks \
+  --ExecutePreprocessor.timeout=-1 \
+  --ExecutePreprocessor.kernel_name=python3
 ```
 
 If launching Jupyter on `desktop-0f24dvl` from your Mac, tunnel the notebook port:
@@ -43,19 +70,26 @@ If launching Jupyter on `desktop-0f24dvl` from your Mac, tunnel the notebook por
 ssh -L 8888:127.0.0.1:8888 desktop-0f24dvl
 ```
 
-Run the default official demo on the remote GPU:
+Run the default registry-backed demo on the remote GPU:
 
 ```bash
-BACKEND=official MODEL_PATH=louaaron/sedd-small DEVICE=cuda scripts/run_app.sh
+cp configs/arc_model_registry.json runs/arc_models/registry.json
+BACKEND=official DEVICE=auto scripts/run_app.sh
 ```
 
 Open `http://127.0.0.1:8000`.
 
-Run the compact mini demo explicitly:
+The current frontend registry exposes:
 
-```bash
-BACKEND=mini scripts/run_app.sh runs/sft_tiny/checkpoint_last.pt
-```
+- `base`: exported official `louaaron/sedd-small`.
+- `medium`: official `louaaron/sedd-medium` from the local HF cache.
+- `mini_tinystories_pretrain`: compact byte-level TinyStories pretrain.
+- `mini_sft`: compact TinyStories-pretrained model after lightweight SFT.
+- `arc_lora_sft`: official SEDD-small LoRA SFT on ARC-Easy.
+- `arc_dcolt_rl`: official SEDD-small DCoLT-style RL on ARC-Challenge.
+
+The default frontend model is `arc_lora_sft`. The generation examples include a
+TinyStories prompt that switches the dropdown to `mini_tinystories_pretrain`.
 
 ## Remote Workflow
 
@@ -131,11 +165,13 @@ Full remote official smoke:
 scripts/remote_official_pipeline_smoke.sh
 ```
 
-The frontend model switcher uses the ARC registry on the remote:
+The notebook and remote run produce one current checkpoint per model version:
 
+- `runs/notebook_tinystories_pretrain/checkpoint_last.pt`
+- `runs/notebook_sft/checkpoint_last.pt`
 - `runs/arc_models/base/checkpoint_base.pt`
-- `runs/arc_models/arc_sft/checkpoint_last.pt`
-- `runs/arc_models/arc_rl/checkpoint_last.pt`
+- `runs/arc_models/arc_lora_sft/checkpoint_last.pt`
+- `runs/arc_models/arc_dcolt_rl/checkpoint_last.pt`
 
 Copy `configs/arc_model_registry.json` to `runs/arc_models/registry.json` after
 training or syncing. `scripts/run_app.sh` auto-detects this ARC registry when it
@@ -162,17 +198,17 @@ for ARC RL behavior; the short default run is demonstrative, not converged.
 - `src/sedd_mini/server.py`: backend for the frontend demo.
 - `src/sedd_mini/official_backend.py`: optional adapter for official SEDD HF checkpoints.
 - `src/sedd_mini/official_prepare_data.py`: GPT-2-token data preparation for official SEDD.
-- `src/sedd_mini/official_finetune.py`: response-only score-entropy SFT for official SEDD.
-- `src/sedd_mini/official_posttrain_rl.py`: trajectory-policy RL for official SEDD.
+- `src/sedd_mini/official_finetune.py`: LoRA response-only score-entropy SFT for official SEDD.
+- `src/sedd_mini/official_posttrain_rl.py`: DCoLT-style grouped RL for official SEDD.
 - `src/sedd_mini/mcqa_data.py`: ARC multiple-choice formatting and exact-answer reward.
 - `configs/`: tiny and remote training configs.
-- `docs/sedd_understanding.md`: paper and implementation summary.
-- `docs/interview_qa.md`: likely interview questions and concise answers.
-- `docs/runbook.md`: execution and demo checklist.
+- `notebooks/sedd_pipeline.ipynb`: executed end-to-end pipeline notebook.
 
 ## References
 
 - Paper: https://arxiv.org/abs/2310.16834
 - Official SEDD repo: https://github.com/louaaron/Score-Entropy-Discrete-Diffusion
 - `louaaron/sedd-small`: https://huggingface.co/louaaron/sedd-small
+- `louaaron/sedd-medium`: https://huggingface.co/louaaron/sedd-medium
 - SEPO RL paper: https://arxiv.org/abs/2502.01384
+- LLaDOU / DCoLT reference: https://github.com/maple-research-lab/LLaDOU
