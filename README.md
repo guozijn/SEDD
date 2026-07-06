@@ -106,6 +106,17 @@ For a longer 16 GB GPU run:
 scripts/remote_train_16gb.sh
 ```
 
+For the S1K remote demo pipeline:
+
+```bash
+scripts/remote_s1k_demo_pipeline.sh
+```
+
+This exports `louaaron/sedd-small`, runs SFT on S1K solution targets, builds
+`data/processed/s1k_dcolt_records.jsonl` as exact-choice DCoLT verifier records
+derived from S1K, runs `sedd-official-rl`, and writes
+`runs/demo_models/registry.json` with `base`, `sft`, and `dcolt_rl` entries.
+
 The remote is WSL2. If `nvidia-smi` is not on `PATH`, the script checks
 `/usr/lib/wsl/lib/nvidia-smi`.
 
@@ -113,7 +124,7 @@ The remote is WSL2. If `nvidia-smi` is not on `PATH`, the script checks
 
 The project has two model backends. The user-facing default is `official`:
 
-- `mini`: this repo's compact byte-level model for full pretrain/SFT/RL demos.
+- `mini`: this repo's compact byte-level model for pretrain/SFT demos.
 - `official`: the upstream SEDD architecture and HF checkpoints such as
   `louaaron/sedd-small` and `louaaron/sedd-medium`.
 
@@ -148,22 +159,27 @@ Serve the frontend against the official checkpoint:
 BACKEND=official MODEL_PATH=louaaron/sedd-small DEVICE=cuda scripts/run_app.sh
 ```
 
-Fine-tune and post-train the official model:
+The canonical LoRA SFT and DCoLT RL path is the executed notebook. After the
+notebook data-preparation cells have produced the ARC tensors/records, the same
+steps can be rerun through the aligned CLIs:
 
 ```bash
-scripts/official_prepare_toy.sh
-DEVICE=cuda MODEL_PATH=louaaron/sedd-small scripts/official_sft_smoke.sh
-DEVICE=cuda \
-  MODEL_PATH=runs/official_sft_smoke/checkpoint_last.pt \
-  REFERENCE_MODEL_PATH=louaaron/sedd-small \
-  scripts/official_rl_smoke.sh
+uv run sedd-official-export-base \
+  --model-path louaaron/sedd-small \
+  --out runs/arc_models/base/checkpoint_base.pt \
+  --device cuda
+
+uv run sedd-official-sft --device cuda
+uv run sedd-official-rl --device cuda
 ```
 
-Full remote official smoke:
+These defaults match the notebook artifact layout:
 
-```bash
-scripts/remote_official_pipeline_smoke.sh
-```
+- `sedd-official-sft` reads `data/processed/official_arc_easy_train.pt` and
+  writes `runs/arc_models/arc_lora_sft/checkpoint_last.pt`.
+- `sedd-official-rl` reads `data/processed/arc_challenge_rl_train.jsonl`, starts
+  from `runs/arc_models/arc_lora_sft/checkpoint_last.pt`, and writes
+  `runs/arc_models/arc_dcolt_rl/checkpoint_last.pt`.
 
 The notebook and remote run produce one current checkpoint per model version:
 
@@ -192,7 +208,6 @@ for ARC RL behavior; the short default run is demonstrative, not converged.
 - `src/sedd_mini/diffusion.py`: absorbing forward process and score entropy loss.
 - `src/sedd_mini/model.py`: bidirectional Transformer score model.
 - `src/sedd_mini/train.py`: pretraining and SFT loop.
-- `src/sedd_mini/posttrain_rl.py`: RL post-training baseline.
 - `src/sedd_mini/evaluate.py`: score entropy, denoising CE, pseudo-perplexity.
 - `src/sedd_mini/sampling.py`: prompt generation and infilling sampler.
 - `src/sedd_mini/server.py`: backend for the frontend demo.
@@ -210,5 +225,4 @@ for ARC RL behavior; the short default run is demonstrative, not converged.
 - Official SEDD repo: https://github.com/louaaron/Score-Entropy-Discrete-Diffusion
 - `louaaron/sedd-small`: https://huggingface.co/louaaron/sedd-small
 - `louaaron/sedd-medium`: https://huggingface.co/louaaron/sedd-medium
-- SEPO RL paper: https://arxiv.org/abs/2502.01384
 - LLaDOU / DCoLT reference: https://github.com/maple-research-lab/LLaDOU

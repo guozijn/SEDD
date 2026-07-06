@@ -133,7 +133,8 @@ def main() -> None:
                     "sample": batch_texts[0][:240],
                 }
             )
-        if update % int(rl_cfg["save_every"]) == 0:
+        save_every = int(rl_cfg["save_every"])
+        if save_every > 0 and update % save_every == 0:
             save_checkpoint(
                 out_dir / f"checkpoint_rl_{update}.pt",
                 model=model,

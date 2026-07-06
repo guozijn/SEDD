@@ -180,23 +180,28 @@ def evaluate(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="SFT/fine-tune official SEDD checkpoints.")
-    parser.add_argument("--model-path", default="louaaron/sedd-small")
+    parser.add_argument("--model-path", default="runs/arc_models/base/checkpoint_base.pt")
     parser.add_argument("--official-repo", default="external/Score-Entropy-Discrete-Diffusion")
-    parser.add_argument("--train-path", default="data/processed/official_sft_train.pt")
-    parser.add_argument("--valid-path", default="data/processed/official_sft_valid.pt")
-    parser.add_argument("--out-dir", default="runs/official_sft")
+    parser.add_argument("--train-path", default="data/processed/official_arc_easy_train.pt")
+    parser.add_argument("--valid-path", default="data/processed/official_arc_easy_valid.pt")
+    parser.add_argument("--out-dir", default="runs/arc_models/arc_lora_sft")
     parser.add_argument("--resume", default="", help="Optional official fine-tune checkpoint.")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--grad-accum", type=int, default=1)
-    parser.add_argument("--steps", type=int, default=100)
+    parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--lr", type=float, default=1.0e-5)
     parser.add_argument("--weight-decay", type=float, default=0.01)
-    parser.add_argument("--warmup-steps", type=int, default=10)
+    parser.add_argument("--warmup-steps", type=int, default=50)
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--eval-every", type=int, default=25)
-    parser.add_argument("--save-every", type=int, default=50)
-    parser.add_argument("--log-every", type=int, default=1)
-    parser.add_argument("--max-eval-batches", type=int, default=10)
+    parser.add_argument("--eval-every", type=int, default=50)
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=0,
+        help="Intermediate checkpoint interval. Set 0 to keep only checkpoint_last.pt.",
+    )
+    parser.add_argument("--log-every", type=int, default=25)
+    parser.add_argument("--max-eval-batches", type=int, default=50)
     parser.add_argument("--lora-rank", type=int, default=8)
     parser.add_argument("--lora-alpha", type=float, default=16.0)
     parser.add_argument("--lora-dropout", type=float, default=0.05)
@@ -280,6 +285,7 @@ def main() -> None:
 
     optimizer.zero_grad(set_to_none=True)
     accum_loss = 0.0
+    accum_count = 0
     for step in tqdm(range(1, args.steps + 1)):
         for group in optimizer.param_groups:
             group["lr"] = learning_rate(step, args.lr, args.warmup_steps)
@@ -290,23 +296,25 @@ def main() -> None:
         scaled_loss = loss / max(args.grad_accum, 1)
         scaled_loss.backward()
         accum_loss += float(loss.detach().cpu())
-        if step % args.grad_accum == 0:
+        accum_count += 1
+        if step % args.grad_accum == 0 or step == args.steps:
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
 
-        if step % args.log_every == 0:
+        if args.log_every > 0 and (step % args.log_every == 0 or step == args.steps):
             payload = {
                 "event": "official_sft_step",
                 "step": step,
-                "loss": accum_loss / args.log_every,
+                "loss": accum_loss / max(accum_count, 1),
                 "lr": optimizer.param_groups[0]["lr"],
                 "elapsed_s": round(time.time() - start_time, 2),
             }
             payload.update(metrics)
             json_log(payload)
             accum_loss = 0.0
-        if step % args.eval_every == 0:
+            accum_count = 0
+        if args.eval_every > 0 and (step % args.eval_every == 0 or step == args.steps):
             valid_loss = evaluate(
                 model,
                 graph,
@@ -316,7 +324,7 @@ def main() -> None:
                 max_batches=args.max_eval_batches,
             )
             json_log({"event": "official_sft_eval", "step": step, "valid_loss": valid_loss})
-        if step % args.save_every == 0:
+        if args.save_every > 0 and step % args.save_every == 0:
             if args.lora_rank > 0:
                 save_merged_lora_checkpoint(
                     out_dir / f"checkpoint_{step}.pt",
@@ -326,7 +334,7 @@ def main() -> None:
                     optimizer=optimizer,
                     extra={
                         "source_model_path": args.model_path,
-                        "stage": "lora_sft",
+                        "stage": "arc_lora_sft",
                         "lora_rank": args.lora_rank,
                         "lora_alpha": args.lora_alpha,
                         "lora_dropout": args.lora_dropout,
@@ -352,7 +360,7 @@ def main() -> None:
             optimizer=optimizer,
             extra={
                 "source_model_path": args.model_path,
-                "stage": "lora_sft",
+                "stage": "arc_lora_sft",
                 "lora_rank": args.lora_rank,
                 "lora_alpha": args.lora_alpha,
                 "lora_dropout": args.lora_dropout,

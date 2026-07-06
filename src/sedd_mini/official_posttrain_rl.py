@@ -239,12 +239,12 @@ def dcolt_loss(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="DCoLT post-train an official SEDD checkpoint.")
-    parser.add_argument("--model-path", default="runs/arc_models/arc_sft/checkpoint_last.pt")
+    parser.add_argument("--model-path", default="runs/arc_models/arc_lora_sft/checkpoint_last.pt")
     parser.add_argument("--reference-model-path", default="runs/arc_models/base/checkpoint_base.pt")
     parser.add_argument("--official-repo", default="external/Score-Entropy-Discrete-Diffusion")
     parser.add_argument("--records-path", default="data/processed/arc_challenge_rl_train.jsonl")
     parser.add_argument("--out-dir", default="runs/arc_models/arc_dcolt_rl")
-    parser.add_argument("--updates", type=int, default=50)
+    parser.add_argument("--updates", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=1, help="Prompt groups per optimizer update.")
     parser.add_argument("--num-generations", type=int, default=4, help="Rollouts per prompt.")
     parser.add_argument("--repeat-times", type=int, default=1, help="Extra rollout repeats per prompt.")
@@ -258,8 +258,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--clip-eps", type=float, default=0.2)
     parser.add_argument("--beta", type=float, default=0.02)
     parser.add_argument("--entropy-coef", type=float, default=0.0)
-    parser.add_argument("--save-every", type=int, default=25)
-    parser.add_argument("--log-every", type=int, default=1)
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=0,
+        help="Intermediate checkpoint interval. Set 0 to keep only checkpoint_last.pt.",
+    )
+    parser.add_argument("--log-every", type=int, default=5)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=37)
     return parser
@@ -372,7 +377,7 @@ def main() -> None:
         optimizer.step()
 
         rewards = [rollout.reward for rollout in update_rollouts]
-        if update % args.log_every == 0:
+        if args.log_every > 0 and (update % args.log_every == 0 or update == args.updates):
             sample = update_rollouts[0]
             payload = {
                 "event": "dcolt_update",
@@ -389,7 +394,7 @@ def main() -> None:
             payload.update(metrics)
             json_log(payload)
 
-        if update % args.save_every == 0:
+        if args.save_every > 0 and update % args.save_every == 0:
             save_official_checkpoint(
                 out_dir / f"checkpoint_dcolt_{update}.pt",
                 model=model,

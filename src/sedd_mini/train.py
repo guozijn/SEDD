@@ -176,7 +176,8 @@ def main() -> None:
             )
             ema.restore(model.parameters())
             json_log({"event": "eval", "step": step, "valid_loss": valid_loss})
-        if step % int(train_cfg["save_every"]) == 0:
+        save_every = int(train_cfg["save_every"])
+        if save_every > 0 and step % save_every == 0:
             save_checkpoint(
                 out_dir / f"checkpoint_{step}.pt",
                 model=model,
