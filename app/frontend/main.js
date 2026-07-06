@@ -145,9 +145,12 @@ function noiseGlyph(sampleIndex, tokenIndex, stepIndex) {
   return glyphs[(sampleIndex * 17 + tokenIndex * 7 + stepIndex * 5 + Date.now()) % glyphs.length];
 }
 
-function tokenClass(value, previousValue) {
+function tokenClass(value, previousValue, isFinalFrame = false) {
   if (value === "[MASK]") {
     return "latent";
+  }
+  if (isFinalFrame) {
+    return "stable";
   }
   if (previousValue === "[MASK]") {
     return "resolved";
@@ -165,13 +168,13 @@ function visibleTokenText(value, sampleIndex, tokenIndex, frameIndex) {
   return value || "";
 }
 
-function appendToken(parent, value, previousValue, sampleIndex, tokenIndex, frameIndex) {
+function appendToken(parent, value, previousValue, sampleIndex, tokenIndex, frameIndex, isFinalFrame) {
   const text = visibleTokenText(value, sampleIndex, tokenIndex, frameIndex);
   if (!text && value !== "[MASK]") {
     return;
   }
   const token = document.createElement("span");
-  token.className = `inline-token ${tokenClass(value, previousValue)}`;
+  token.className = `inline-token ${tokenClass(value, previousValue, isFinalFrame)}`;
   token.textContent = text || " ";
   parent.appendChild(token);
 }
@@ -182,7 +185,7 @@ function generatedSegments(sample) {
     : [];
 }
 
-function renderSampleText(sample, previousSample, sampleIndex, frameIndex) {
+function renderSampleText(sample, previousSample, sampleIndex, frameIndex, isFinalFrame) {
   const text = document.createElement("div");
   text.className = "inline-text";
 
@@ -210,6 +213,7 @@ function renderSampleText(sample, previousSample, sampleIndex, frameIndex) {
           sampleIndex,
           generatedIndex * 100 + tokenIndex,
           frameIndex,
+          isFinalFrame,
         );
       });
       text.appendChild(span);
@@ -221,7 +225,15 @@ function renderSampleText(sample, previousSample, sampleIndex, frameIndex) {
   const previousTokens = Array.isArray(previousSample?.tokens) ? previousSample.tokens : [];
   const tokens = Array.isArray(sample.tokens) ? sample.tokens : [];
   tokens.forEach((value, tokenIndex) => {
-    appendToken(text, value, previousTokens[tokenIndex] || "[MASK]", sampleIndex, tokenIndex, frameIndex);
+    appendToken(
+      text,
+      value,
+      previousTokens[tokenIndex] || "[MASK]",
+      sampleIndex,
+      tokenIndex,
+      frameIndex,
+      isFinalFrame,
+    );
   });
   return text;
 }
@@ -230,6 +242,7 @@ function renderFrame(data, frameIndex) {
   const step = data.steps[frameIndex];
   const previous = data.steps[Math.max(0, frameIndex - 1)];
   const totalFrames = Math.max(1, data.steps.length - 1);
+  const isFinalFrame = frameIndex === totalFrames;
   const progress = Math.round((frameIndex / totalFrames) * 100);
   const label = modelSelect.options[modelSelect.selectedIndex]?.textContent || data.backend;
   const mode = data.mode === "infill" ? "infill" : "generation";
@@ -243,7 +256,7 @@ function renderFrame(data, frameIndex) {
   head.className = "stage-head";
   const title = document.createElement("div");
   title.className = "stage-title";
-  title.textContent = frameIndex === totalFrames ? "Denoised text" : "Reverse diffusion in progress";
+  title.textContent = isFinalFrame ? "Denoised text" : "Reverse diffusion in progress";
   const meter = document.createElement("div");
   meter.className = "progress-track";
   const fill = document.createElement("div");
@@ -263,7 +276,7 @@ function renderFrame(data, frameIndex) {
     laneHead.className = "lane-head";
     laneHead.textContent = `sample ${sampleIndex + 1} | unresolved ${sample.masked}`;
     lane.appendChild(laneHead);
-    lane.appendChild(renderSampleText(sample, previous.samples[sampleIndex], sampleIndex, frameIndex));
+    lane.appendChild(renderSampleText(sample, previous.samples[sampleIndex], sampleIndex, frameIndex, isFinalFrame));
     lanes.appendChild(lane);
   });
   stage.appendChild(lanes);
