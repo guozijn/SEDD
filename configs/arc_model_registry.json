@@ -16,20 +16,6 @@
       "description": "Official louaaron/sedd-medium base model from the local Hugging Face cache"
     },
     {
-      "id": "mini_tinystories_pretrain",
-      "label": "Mini TinyStories Pretrain",
-      "backend": "mini",
-      "checkpoint": "runs/notebook_tinystories_pretrain/checkpoint_last.pt",
-      "description": "Compact byte-level model trained from scratch on TinyStories"
-    },
-    {
-      "id": "mini_sft",
-      "label": "Mini SFT",
-      "backend": "mini",
-      "checkpoint": "runs/notebook_sft/checkpoint_last.pt",
-      "description": "Compact TinyStories-pretrained byte-level model after lightweight SFT"
-    },
-    {
       "id": "arc_lora_sft",
       "label": "ARC LoRA SFT",
       "backend": "official",

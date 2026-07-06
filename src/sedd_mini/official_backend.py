@@ -195,6 +195,86 @@ class OfficialSEDDBackend:
             "step": self.step,
         }
 
+    def _build_projector(
+        self,
+        *,
+        input_ids: list[int],
+        input_locs: list[int],
+        batch_size: int = 1,
+    ):
+        if len(input_ids) != len(input_locs):
+            raise ValueError("input_ids and input_locs must have the same length")
+        if any(loc < 0 or loc >= self.seq_len for loc in input_locs):
+            raise ValueError("fixed token location is outside the model sequence length")
+        if input_ids:
+            fixed = torch.tensor(input_ids, device=self.device)[None].repeat(batch_size, 1)
+        else:
+            fixed = torch.empty((batch_size, 0), dtype=torch.long, device=self.device)
+
+        def project(x: torch.Tensor) -> torch.Tensor:
+            if input_locs:
+                x[:, input_locs] = fixed
+            return x
+
+        return project
+
+    def _sample_with_fixed_ids(
+        self,
+        *,
+        input_ids: list[int],
+        input_locs: list[int],
+        batch_size: int = 1,
+        steps: int = 128,
+        predictor: str = "analytic",
+    ) -> torch.Tensor:
+        project = self._build_projector(input_ids=input_ids, input_locs=input_locs, batch_size=batch_size)
+        sampler = self._sampling.get_pc_sampler(
+            self.graph,
+            self.noise,
+            (batch_size, self.seq_len),
+            predictor,
+            steps,
+            device=self.device,
+            proj_fun=project,
+        )
+        return project(sampler(self.model))
+
+    def _pc_trace_with_fixed_ids(
+        self,
+        *,
+        input_ids: list[int],
+        input_locs: list[int],
+        batch_size: int,
+        steps: int,
+        predictor: str = "analytic",
+        eps: float = 1.0e-5,
+    ) -> list[torch.Tensor]:
+        """Run the official PC sampler update path and keep projected states."""
+
+        total_steps = max(1, int(steps))
+        project = self._build_projector(input_ids=input_ids, input_locs=input_locs, batch_size=batch_size)
+        predictor_obj = self._sampling.get_predictor(predictor)(self.graph, self.noise)
+        denoiser = self._sampling.Denoiser(self.graph, self.noise)
+        sampling_score_fn = self._sampling.mutils.get_score_fn(self.model, train=False, sampling=True)
+        x = self.graph.sample_limit(batch_size, self.seq_len).to(self.device)
+        x = project(x)
+        states = [x.clone()]
+        timesteps = torch.linspace(1, eps, total_steps + 1, device=self.device)
+        step_size = (1 - eps) / total_steps
+
+        for step in range(total_steps):
+            t = timesteps[step] * torch.ones(x.shape[0], 1, device=self.device)
+            x = project(x)
+            x = predictor_obj.update_fn(sampling_score_fn, x, t, step_size)
+            x = project(x)
+            states.append(x.clone())
+
+        t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
+        x = project(x)
+        x = denoiser.update_fn(sampling_score_fn, x, t)
+        states[-1] = project(x).clone()
+        return states
+
     def _sample_with_constraints(
         self,
         *,
@@ -215,26 +295,31 @@ class OfficialSEDDBackend:
         if suffix_ids:
             input_locs += list(range(self.seq_len - len(suffix_ids), self.seq_len))
 
-        if input_ids:
-            fixed = torch.tensor(input_ids, device=self.device)[None].repeat(batch_size, 1)
-        else:
-            fixed = torch.empty((batch_size, 0), dtype=torch.long, device=self.device)
-
-        def project(x: torch.Tensor) -> torch.Tensor:
-            if input_locs:
-                x[:, input_locs] = fixed
-            return x
-
-        sampler = self._sampling.get_pc_sampler(
-            self.graph,
-            self.noise,
-            (batch_size, self.seq_len),
-            predictor,
-            steps,
-            device=self.device,
-            proj_fun=project,
+        return self._sample_with_fixed_ids(
+            input_ids=input_ids,
+            input_locs=input_locs,
+            batch_size=batch_size,
+            steps=steps,
+            predictor=predictor,
         )
-        return project(sampler(self.model))
+
+    def _is_mask_id(self, token_id: int) -> bool:
+        return bool(getattr(self.graph, "absorb", False)) and token_id == int(self.graph.dim - 1)
+
+    def _token_label(self, token_id: int, *, eos: int) -> str:
+        if self._is_mask_id(token_id):
+            return "[MASK]"
+        if token_id == eos:
+            return "<eos>"
+        text = self.tokenizer.decode([token_id], skip_special_tokens=True)
+        return text if text.strip() else repr(text)[1:-1]
+
+    def _decode_visible(self, token_ids: list[int], *, eos: int) -> str:
+        visible = [token for token in token_ids if token != eos and not self._is_mask_id(token)]
+        return self.tokenizer.decode(visible, skip_special_tokens=True)
+
+    def _masked_count(self, token_ids: list[int]) -> int:
+        return sum(1 for token in token_ids if self._is_mask_id(token))
 
     @torch.no_grad()
     def generate(self, prompt: str, params: Any) -> str:
@@ -269,84 +354,44 @@ class OfficialSEDDBackend:
     def visualize_generate(
         self, prompt: str, params: Any, *, batch_size: int = 4
     ) -> dict[str, object]:
-        from .sampling import top_k_top_p_filter
-
         eos = int(self.tokenizer.eos_token_id)
-        mask_id = int(self.graph.dim - 1)
         prefix_ids = self.tokenizer(prompt).input_ids
         max_prompt = max(1, self.seq_len - int(params.max_new_tokens))
         prefix_ids = prefix_ids[-max_prompt:]
         gen_len = min(int(params.max_new_tokens), self.seq_len - len(prefix_ids))
-        ids = torch.full((batch_size, self.seq_len), eos, dtype=torch.long, device=self.device)
-        ids[:, : len(prefix_ids)] = torch.tensor(prefix_ids, dtype=torch.long, device=self.device)
         response_slice = slice(len(prefix_ids), len(prefix_ids) + gen_len)
-        ids[:, response_slice] = mask_id
-        response_mask = torch.zeros(self.seq_len, dtype=torch.bool, device=self.device)
-        response_mask[response_slice] = True
 
-        def token_label(token_id: int) -> str:
-            if token_id == mask_id:
-                return "[MASK]"
-            if token_id == eos:
-                return "<eos>"
-            text = self.tokenizer.decode([token_id], skip_special_tokens=True)
-            return text if text.strip() else repr(text)[1:-1]
+        states = self._pc_trace_with_fixed_ids(
+            input_ids=prefix_ids,
+            input_locs=list(range(len(prefix_ids))),
+            batch_size=batch_size,
+            steps=params.steps,
+            predictor="analytic",
+        )
 
-        def snapshot(step: int) -> dict[str, object]:
+        def snapshot(step: int, state: torch.Tensor) -> dict[str, object]:
             samples = []
-            for row in ids[:, response_slice].detach().cpu().tolist():
+            for row in state[:, response_slice].detach().cpu().tolist():
                 samples.append(
                     {
-                        "text": self.tokenizer.decode(row, skip_special_tokens=True),
-                        "tokens": [token_label(token) for token in row],
-                        "masked": sum(1 for token in row if token == mask_id),
+                        "text": self._decode_visible(row, eos=eos),
+                        "tokens": [self._token_label(token, eos=eos) for token in row],
+                        "masked": self._masked_count(row),
                     }
                 )
             return {"step": step, "samples": samples}
 
-        trace = [snapshot(0)]
-        self.model.eval()
-        total_steps = max(1, int(params.steps))
-        initial_mask_count = max(1, int(response_mask.sum().item()))
-        for step in range(total_steps):
-            t = torch.full(
-                (batch_size,),
-                1.0 - (step / total_steps) * 0.999,
-                device=self.device,
-            )
-            sigma = self.noise(t)[0]
-            logits_all = self.model(ids.clone(), sigma)[..., :mask_id]
-            desired_remaining = (initial_mask_count * max(0, total_steps - step - 1)) // total_steps
-            for batch_idx in range(batch_size):
-                masked = (ids[batch_idx] == mask_id) & response_mask
-                positions = masked.nonzero(as_tuple=False).flatten()
-                if positions.numel() == 0:
-                    continue
-                count = int(positions.numel()) - desired_remaining
-                if count <= 0:
-                    continue
-                count = min(int(positions.numel()), count)
-                order = torch.randperm(positions.numel(), device=self.device)
-                fill_positions = positions[order[:count]]
-                logits = logits_all[batch_idx, fill_positions] / max(float(params.temperature), 1.0e-5)
-                logits = top_k_top_p_filter(logits, top_k=int(params.top_k), top_p=float(params.top_p))
-                probs = torch.softmax(logits, dim=-1)
-                sampled = torch.multinomial(probs, num_samples=1).squeeze(-1)
-                ids[batch_idx, fill_positions] = sampled
-            trace.append(snapshot(step + 1))
-
         return {
             "backend": self.name,
+            "sampler": "official_pc",
             "prompt": prompt,
             "batch_size": batch_size,
             "response_tokens": gen_len,
-            "steps": trace,
+            "steps": [snapshot(index, state) for index, state in enumerate(states)],
         }
 
     @torch.no_grad()
     def visualize_infill(self, text: str, params: Any, *, batch_size: int = 4) -> dict[str, object]:
-        from .sampling import top_k_top_p_filter
-
         marker = "[MASK]"
         if marker not in text:
             return self.visualize_generate(text, params, batch_size=batch_size)
@@ -356,12 +401,15 @@ class OfficialSEDDBackend:
         tokens_per_mask = max(1, int(params.max_new_tokens))
         parts = text.split(marker)
         ids_template: list[int] = []
+        fixed_ids: list[int] = []
+        fixed_locs: list[int] = []
         spans: list[dict[str, object]] = []
         for index, part in enumerate(parts):
             if part:
-                fixed_ids = self.tokenizer(part).input_ids
+                part_ids = self.tokenizer(part).input_ids
                 start = len(ids_template)
-                ids_template.extend(fixed_ids)
+                ids_template.extend(part_ids)
+                fixed_locs.extend(range(start, len(ids_template)))
                 spans.append({"kind": "fixed", "start": start, "end": len(ids_template)})
             if index < len(parts) - 1:
                 start = len(ids_template)
@@ -373,25 +421,18 @@ class OfficialSEDDBackend:
                 f"infill template is {len(ids_template)} tokens, longer than model sequence length {self.seq_len}"
             )
 
-        ids = torch.full((batch_size, self.seq_len), eos, dtype=torch.long, device=self.device)
-        ids[:, : len(ids_template)] = torch.tensor(ids_template, dtype=torch.long, device=self.device)
-        response_mask = ids.eq(mask_id)
+        fixed_ids = [ids_template[loc] for loc in fixed_locs]
+        states = self._pc_trace_with_fixed_ids(
+            input_ids=fixed_ids,
+            input_locs=fixed_locs,
+            batch_size=batch_size,
+            steps=params.steps,
+            predictor="analytic",
+        )
 
-        def token_label(token_id: int) -> str:
-            if token_id == mask_id:
-                return "[MASK]"
-            if token_id == eos:
-                return "<eos>"
-            text_value = self.tokenizer.decode([token_id], skip_special_tokens=True)
-            return text_value if text_value.strip() else repr(text_value)[1:-1]
-
-        def decode_visible(token_ids: list[int]) -> str:
-            visible = [token for token in token_ids if token not in {mask_id, eos}]
-            return self.tokenizer.decode(visible, skip_special_tokens=True)
-
-        def snapshot(step: int) -> dict[str, object]:
+        def snapshot(step: int, state: torch.Tensor) -> dict[str, object]:
             samples = []
-            for row in ids[:, : len(ids_template)].detach().cpu().tolist():
+            for row in state[:, : len(ids_template)].detach().cpu().tolist():
                 rendered = []
                 for span in spans:
                     start = int(span["start"])
@@ -399,62 +440,33 @@ class OfficialSEDDBackend:
                     span_ids = row[start:end]
                     kind = str(span["kind"])
                     if kind == "fixed":
-                        rendered.append({"kind": "fixed", "text": decode_visible(span_ids)})
+                        rendered.append({"kind": "fixed", "text": self._decode_visible(span_ids, eos=eos)})
                     else:
                         rendered.append(
                             {
                                 "kind": "generated",
-                                "text": decode_visible(span_ids),
-                                "tokens": [token_label(token) for token in span_ids],
-                                "masked": sum(1 for token in span_ids if token == mask_id),
+                                "text": self._decode_visible(span_ids, eos=eos),
+                                "tokens": [self._token_label(token, eos=eos) for token in span_ids],
+                                "masked": self._masked_count(span_ids),
                             }
                         )
                 samples.append(
                     {
                         "text": "".join(str(segment.get("text", "")) for segment in rendered),
                         "segments": rendered,
-                        "masked": sum(1 for token in row if token == mask_id),
+                        "masked": self._masked_count(row[: len(ids_template)]),
                     }
                 )
             return {"step": step, "samples": samples}
 
-        trace = [snapshot(0)]
-        self.model.eval()
-        total_steps = max(1, int(params.steps))
-        initial_mask_count = max(1, int(response_mask[0].sum().item()))
-        for step in range(total_steps):
-            t = torch.full(
-                (batch_size,),
-                1.0 - (step / total_steps) * 0.999,
-                device=self.device,
-            )
-            sigma = self.noise(t)[0]
-            logits_all = self.model(ids.clone(), sigma)[..., :mask_id]
-            desired_remaining = (initial_mask_count * max(0, total_steps - step - 1)) // total_steps
-            for batch_idx in range(batch_size):
-                masked = (ids[batch_idx] == mask_id) & response_mask[batch_idx]
-                positions = masked.nonzero(as_tuple=False).flatten()
-                if positions.numel() == 0:
-                    continue
-                count = int(positions.numel()) - desired_remaining
-                if count <= 0:
-                    continue
-                count = min(int(positions.numel()), count)
-                order = torch.randperm(positions.numel(), device=self.device)
-                fill_positions = positions[order[:count]]
-                logits = logits_all[batch_idx, fill_positions] / max(float(params.temperature), 1.0e-5)
-                logits = top_k_top_p_filter(logits, top_k=int(params.top_k), top_p=float(params.top_p))
-                probs = torch.softmax(logits, dim=-1)
-                ids[batch_idx, fill_positions] = torch.multinomial(probs, num_samples=1).squeeze(-1)
-            trace.append(snapshot(step + 1))
-
         return {
             "backend": self.name,
+            "sampler": "official_pc",
             "mode": "infill",
             "source": text,
             "batch_size": batch_size,
             "tokens_per_mask": tokens_per_mask,
-            "steps": trace,
+            "steps": [snapshot(index, state) for index, state in enumerate(states)],
         }
 
 

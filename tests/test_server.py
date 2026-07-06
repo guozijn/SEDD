@@ -11,12 +11,6 @@ def test_models_endpoint_exposes_registry_entries(tmp_path):
                 "default_model_id": "arc_lora_sft",
                 "models": [
                     {"id": "base", "label": "SEDD small base", "backend": "official"},
-                    {
-                        "id": "mini_tinystories_pretrain",
-                        "label": "Mini TinyStories Pretrain",
-                        "backend": "mini",
-                    },
-                    {"id": "mini_sft", "label": "Mini SFT", "backend": "mini"},
                     {"id": "arc_lora_sft", "label": "ARC LoRA SFT", "backend": "official"},
                     {"id": "arc_dcolt_rl", "label": "ARC DCoLT RL", "backend": "official"},
                 ],
@@ -32,8 +26,6 @@ def test_models_endpoint_exposes_registry_entries(tmp_path):
     assert payload["default_model_id"] == "arc_lora_sft"
     assert [model["id"] for model in payload["models"]] == [
         "base",
-        "mini_tinystories_pretrain",
-        "mini_sft",
         "arc_lora_sft",
         "arc_dcolt_rl",
     ]
@@ -49,12 +41,6 @@ def test_models_endpoint_auto_discovers_arc_registry(tmp_path, monkeypatch):
                 "default_model_id": "arc_lora_sft",
                 "models": [
                     {"id": "base", "label": "SEDD-small base", "backend": "official"},
-                    {
-                        "id": "mini_tinystories_pretrain",
-                        "label": "Mini TinyStories Pretrain",
-                        "backend": "mini",
-                    },
-                    {"id": "mini_sft", "label": "Mini SFT", "backend": "mini"},
                     {"id": "arc_lora_sft", "label": "ARC LoRA SFT", "backend": "official"},
                     {"id": "arc_dcolt_rl", "label": "ARC DCoLT RL", "backend": "official"},
                 ],
@@ -71,8 +57,6 @@ def test_models_endpoint_auto_discovers_arc_registry(tmp_path, monkeypatch):
     assert payload["default_model_id"] == "arc_lora_sft"
     assert [model["id"] for model in payload["models"]] == [
         "base",
-        "mini_tinystories_pretrain",
-        "mini_sft",
         "arc_lora_sft",
         "arc_dcolt_rl",
     ]

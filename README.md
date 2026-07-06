@@ -83,13 +83,11 @@ The current frontend registry exposes:
 
 - `base`: exported official `louaaron/sedd-small`.
 - `medium`: official `louaaron/sedd-medium` from the local HF cache.
-- `mini_tinystories_pretrain`: compact byte-level TinyStories pretrain.
-- `mini_sft`: compact TinyStories-pretrained model after lightweight SFT.
 - `arc_lora_sft`: official SEDD-small LoRA SFT on ARC-Easy.
 - `arc_dcolt_rl`: official SEDD-small DCoLT-style RL on ARC-Challenge.
 
-The default frontend model is `arc_lora_sft`. The generation examples include a
-TinyStories prompt that switches the dropdown to `mini_tinystories_pretrain`.
+The default frontend model is `arc_lora_sft`; the dropdown intentionally lists
+only official SEDD checkpoints.
 
 ## Remote Workflow
 

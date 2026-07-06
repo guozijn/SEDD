@@ -13,14 +13,9 @@ let activeTrace = null;
 let playbackTimer = null;
 let availableModels = [];
 let activeMode = "infill";
+const HIDDEN_MODEL_IDS = new Set(["mini_tinystories_pretrain", "mini_sft"]);
 
 const GENERATION_EXAMPLES = [
-  {
-    label: "Tiny story",
-    modelId: "mini_tinystories_pretrain",
-    prompt:
-      "Once upon a time, a small red bird found a shiny key under a leaf. The bird picked it up and ",
-  },
   {
     label: "Fever",
     modelId: "arc_lora_sft",
@@ -333,7 +328,9 @@ function showModelError(message) {
 }
 
 function renderModelOptions(payload) {
-  const models = Array.isArray(payload.models) ? payload.models : [];
+  const models = (Array.isArray(payload.models) ? payload.models : []).filter(
+    (model) => !HIDDEN_MODEL_IDS.has(model.id),
+  );
   modelSelect.innerHTML = "";
   if (models.length === 0) {
     showModelError("The API returned no model entries from /models.");
